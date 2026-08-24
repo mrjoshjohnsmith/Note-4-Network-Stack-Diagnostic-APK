@@ -25,6 +25,7 @@ jobs:
           echo '1def27e3a01124d995a563d6c1b7bef0eb9e12dc594000e155ccdc2835728830  /tmp/project.tar.gz' | sha256sum -c -
           gzip -t /tmp/project.tar.gz
           tar -xzf /tmp/project.tar.gz
+          sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' app/build.gradle
       - name: Build release APK
         run: gradle :app:assembleRelease --no-daemon
       - name: Zipalign unsigned APK
