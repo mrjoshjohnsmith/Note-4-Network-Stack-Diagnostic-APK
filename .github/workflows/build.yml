@@ -21,7 +21,9 @@ jobs:
       - name: Materialize project
         shell: bash
         run: |
-          base64 -d project-v1.0.b64 > /tmp/project.tar.gz
+          cat project-v1.0.part00 project-v1.0.part01 project-v1.0.part02 project-v1.0.part03 project-v1.0.part04 | base64 -d > /tmp/project.tar.gz
+          echo '1def27e3a01124d995a563d6c1b7bef0eb9e12dc594000e155ccdc2835728830  /tmp/project.tar.gz' | sha256sum -c -
+          gzip -t /tmp/project.tar.gz
           tar -xzf /tmp/project.tar.gz
       - name: Build release APK
         run: gradle :app:assembleRelease --no-daemon
