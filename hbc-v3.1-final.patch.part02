@@ -1,0 +1,160 @@
++    }
++
++    private void appendRestore(StringBuilder b, String path, String value) {
++        if (path == null || path.length() == 0 || value == null || value.length() == 0) return;
++        b.append("echo ").append(RootShell.sq(value)).append(" > ").append(RootShell.sq(path)).append(" 2>/dev/null; ");
++    }
++
++    private void launchDetachedForceStop() {
++        String script = "sleep 1; am force-stop " + RootShell.sq(getPackageName());
++        RootShell.run("sh -c " + RootShell.sq("(" + script + ") >/dev/null 2>&1 </dev/null &"));
+     }
+ 
+     private boolean writeNode(String path, String value) {
+@@ -308,11 +472,14 @@
+     private Notification buildNotification() {
+         Intent open = new Intent(this, MainActivity.class);
+         PendingIntent pi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT);
++        RemoteViews content = new RemoteViews(getPackageName(), R.layout.notification_hbc);
++        content.setImageViewResource(R.id.notification_icon, R.mipmap.ic_launcher);
++        content.setTextViewText(R.id.notification_title, "High Brightness Control");
++        content.setTextViewText(R.id.notification_text, "HBM controller active");
+         return new Notification.Builder(this)
+                 .setSmallIcon(R.drawable.ic_stat_sun)
+-                .setContentTitle("High Brightness Control")
+-                .setContentText("HBM controller active")
+                 .setContentIntent(pi)
++                .setContent(content)
+                 .setOngoing(true)
+                 .build();
+     }
+diff -ruN old/MainActivity.java new/MainActivity.java
+--- old/MainActivity.java	2026-08-25 18:45:10.000000000 +0000
++++ new/MainActivity.java	2026-08-25 22:44:57.019659739 +0000
+@@ -13,6 +13,7 @@
+ import android.os.Bundle;
+ import android.view.Gravity;
+ import android.view.View;
++import android.widget.Button;
+ import android.widget.CompoundButton;
+ import android.widget.EditText;
+ import android.widget.LinearLayout;
+@@ -37,7 +38,7 @@
+     private TextView luxStatus;
+     private TextView sensitivityValue;
+     private SeekBar sensitivity;
+-    private Switch switchMaster, switchForceHbm, switchManualMax, switchThermal, switchTimeout, switchBoot;
++    private Switch switchMaster, switchForceHbm, switchApplyToAuto, switchManualMax, switchThermal, switchTimeout, switchBoot;
+     private boolean loading;
+ 
+     private final BroadcastReceiver stateReceiver = new BroadcastReceiver() {
+@@ -48,7 +49,7 @@
+             float eff = intent.getFloatExtra(HbmService.EXTRA_EFFECTIVE_LUX, -1f);
+             chipStatus.setText(s == null ? "READY" : s);
+             if (lux >= 0f && eff >= 0f) {
+-                luxStatus.setText(String.format(Locale.US, "Ambient: %.0f lux   ·   Effective HBM light: %.0f lux", lux, eff));
++                luxStatus.setText(String.format(Locale.US, "Ambient: %.0f lux   ·   Effective light: %.0f lux", lux, eff));
+             } else {
+                 luxStatus.setText("Ambient light sensor: waiting for reading");
+             }
+@@ -100,7 +101,7 @@
+         TextView cardTitle = text("Unlock HBM", 18, WHITE);
+         cardTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+         mainCard.addView(cardTitle);
+-        TextView desc = text("Use Samsung's real HBM path while keeping the ambient light sensor and normal automatic brightness intact.", 13, MUTED);
++        TextView desc = text("Use Samsung's real HBM path with the real ambient sensor, plus optional scaling of Samsung automatic brightness.", 13, MUTED);
+         mainCard.addView(desc, lp(-1, -2, 0, 5, 0, 10));
+ 
+         switchMaster = sw("Enable High Brightness Control");
+@@ -113,7 +114,7 @@
+         TextView forceHelp = text("Keeps Samsung HBM asserted regardless of automatic/manual mode or brightness-slider position until you turn it off.", 12, MUTED);
+         mainCard.addView(forceHelp, lp(-1, -2, 0, 0, 0, 4));
+ 
+-        TextView sensTitle = text("Light sensitivity", 15, WHITE);
++        TextView sensTitle = text("Light sensitivity multiplier", 15, WHITE);
+         sensTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+         mainCard.addView(sensTitle, lp(-1, -2, 0, 14, 0, 0));
+ 
+@@ -133,8 +134,13 @@
+         sensitivity.setMax(200);
+         mainCard.addView(sensitivity, lp(-1, -2, 0, 0, 0, 0));
+ 
+-        TextView scaleHelp = text("Slider: 0–200%. Tap the gold percentage above it to enter any value from 0–1,000,000%. 100% = Samsung stock HBM behavior. 50% requires twice as much light; 200% uses half the reference light level. 0% blocks light-triggered HBM. The real sensor reading is never spoofed.", 12, MUTED);
+-        mainCard.addView(scaleHelp, lp(-1, -2, 0, 3, 0, 10));
++        TextView scaleHelp = text("Slider: 0–200%. Tap the gold percentage above it to enter any value from 0–1,000,000%. 100% = Samsung stock light scale. 50% requires twice as much real light; 200% requires half as much. 0% blocks light-triggered HBM. The real sensor reading itself is never spoofed.", 12, MUTED);
++        mainCard.addView(scaleHelp, lp(-1, -2, 0, 3, 0, 8));
++
++        switchApplyToAuto = sw("Apply multiplier to Samsung auto brightness");
++        mainCard.addView(switchApplyToAuto);
++        TextView autoHelp = text("When on, the effective light value also drives Samsung's normal automatic-brightness curve. When off, the multiplier changes only the light threshold used for HBM.", 12, MUTED);
++        mainCard.addView(autoHelp, lp(-1, -2, 0, 0, 0, 8));
+ 
+         luxStatus = text("Ambient light sensor: waiting for reading", 12, GOLD);
+         mainCard.addView(luxStatus, lp(-1, -2, 0, 0, 0, 10));
+@@ -148,6 +154,32 @@
+         mainCard.addView(switchTimeout);
+         mainCard.addView(switchBoot);
+ 
++        LinearLayout closeRow = horizontal();
++        Button saveClose = actionButton("SAVE SETTINGS & CLOSE", true);
++        Button restoreClose = actionButton("RESTORE DEFAULTS & CLOSE", false);
++        closeRow.addView(saveClose, new LinearLayout.LayoutParams(0, dp(52), 1f));
++        LinearLayout.LayoutParams restoreLp = new LinearLayout.LayoutParams(0, dp(52), 1f);
++        restoreLp.setMargins(dp(8), 0, 0, 0);
++        closeRow.addView(restoreClose, restoreLp);
++        mainCard.addView(closeRow, lp(-1, -2, 0, 14, 0, 0));
++        TextView closeHelp = text("Save & close leaves the HBC controller running. Restore defaults & close returns Samsung display behavior to normal and fully force-stops HBC. Your saved values, including sensitivity, are kept for the next launch.", 11, MUTED);
++        mainCard.addView(closeHelp, lp(-1, -2, 0, 5, 0, 0));
++
++        saveClose.setOnClickListener(new View.OnClickListener() {
++            @Override public void onClick(View v) {
++                startService(new Intent(MainActivity.this, HbmService.class));
++                finishAndRemoveTask();
++            }
++        });
++        restoreClose.setOnClickListener(new View.OnClickListener() {
++            @Override public void onClick(View v) {
++                Intent i = new Intent(MainActivity.this, HbmService.class);
++                i.setAction(HbmService.ACTION_RESTORE_AND_STOP);
++                startService(i);
++                finishAndRemoveTask();
++            }
++        });
++
+         root.addView(mainCard, lp(-1, -2, 0, 0, 0, 14));
+ 
+         LinearLayout warning = card();
+@@ -166,6 +198,7 @@
+                 String key;
+                 if (buttonView == switchMaster) key = Prefs.MASTER;
+                 else if (buttonView == switchForceHbm) key = Prefs.FORCE_HBM;
++                else if (buttonView == switchApplyToAuto) key = Prefs.APPLY_TO_AUTO_BRIGHTNESS;
+                 else if (buttonView == switchManualMax) key = Prefs.MANUAL_MAX;
+                 else if (buttonView == switchThermal) key = Prefs.THERMAL;
+                 else if (buttonView == switchTimeout) key = Prefs.TIMEOUT;
+@@ -176,6 +209,7 @@
+         };
+         switchMaster.setOnCheckedChangeListener(listener);
+         switchForceHbm.setOnCheckedChangeListener(listener);
++        switchApplyToAuto.setOnCheckedChangeListener(listener);
+         switchManualMax.setOnCheckedChangeListener(listener);
+         switchThermal.setOnCheckedChangeListener(listener);
+         switchTimeout.setOnCheckedChangeListener(listener);
+@@ -217,7 +251,7 @@
+         box.addView(range, lp(-1, -2, 0, 4, 0, 0));
+ 
+         new AlertDialog.Builder(this)
+-                .setTitle("Light sensitivity")
++                .setTitle("Light sensitivity multiplier")
+                 .setView(box)
+                 .setNegativeButton("Cancel", null)
+                 .setPositiveButton("Set", new android.content.DialogInterface.OnClickListener() {
+@@ -246,6 +280,7 @@
+         loading = true;
+         switchMaster.setChecked(prefs.getBoolean(Prefs.MASTER, false));
+         switchForceHbm.setChecked(prefs.getBoolean(Prefs.FORCE_HBM, false));
++        switchApplyToAuto.setChecked(prefs.getBoolean(Prefs.APPLY_TO_AUTO_BRIGHTNESS, false));
+         switchManualMax.setChecked(prefs.getBoolean(Prefs.MANUAL_MAX, false));
+         switchThermal.setChecked(prefs.getBoolean(Prefs.THERMAL, false));
+         switchTimeout.setChecked(prefs.getBoolean(Prefs.TIMEOUT, false));
+@@ -272,6 +307,26 @@
