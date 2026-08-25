@@ -1,4 +1,4 @@
-name: Build High Brightness Control 2.1
+name: Build High Brightness Control 2.2
 on:
   push:
     branches: [ high-brightness-control-v2 ]
@@ -19,7 +19,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Materialize verified source and harden root framing
+      - name: Materialize verified source and apply v2.2 changes
         shell: bash
         run: |
           echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
@@ -28,13 +28,59 @@ jobs:
           tar -xzf hbc-project-v2.1.tar.gz -C hbc-src
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java')
-          s=p.read_text()
-          old='                input.write("rc=$?; echo " + marker + "$rc");'
-          new='                input.write("rc=$?; printf \'\\\\n" + marker + "%s\\\\n\' \\"$rc\\"");'
+
+          # Preserve v2.1 root-shell fix.
+          p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java')
+          s = p.read_text()
+          old = '                input.write("rc=$?; echo " + marker + "$rc");'
+          new = '                input.write("rc=$?; printf \'\\\\n" + marker + "%s\\\\n\' \\"$rc\\"");'
           assert s.count(old) == 1
-          p.write_text(s.replace(old,new))
+          p.write_text(s.replace(old, new))
+
+          # Light Sensitivity: 0-5000%, otherwise behavior unchanged.
+          p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java')
+          s = p.read_text()
+          replacements = {
+              'TextView five = text("2000%", 12, MUTED);': 'TextView five = text("5000%", 12, MUTED);',
+              'sensitivity.setMax(2000);': 'sensitivity.setMax(5000);',
+              '500% uses one-fifth the reference light level; 2000% uses one-twentieth.': '500% uses one-fifth the reference light level; 5000% uses one-fiftieth.',
+              'Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))': 'Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100))',
+          }
+          for old, new in replacements.items():
+              assert s.count(old) == 1, old
+              s = s.replace(old, new)
+          p.write_text(s)
+
+          p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java')
+          s = p.read_text()
+          assert s.count('Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))') == 2
+          s = s.replace('Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))',
+                        'Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100))')
+          p.write_text(s)
+
+          # Follow Android's normal orientation/auto-rotate setting.
+          p = Path('hbc-src/app/src/main/AndroidManifest.xml')
+          s = p.read_text()
+          old = '            android:screenOrientation="portrait"\n'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, ''))
+
+          # In-place update version.
+          p = Path('hbc-src/app/build.gradle')
+          s = p.read_text()
+          assert s.count('versionCode 3') == 1
+          assert s.count("versionName '2.1'") == 1
+          s = s.replace('versionCode 3', 'versionCode 4')
+          s = s.replace("versionName '2.1'", "versionName '2.2'")
+          p.write_text(s)
           PY
+
+          grep -F 'sensitivity.setMax(5000)' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
+          grep -F '5000% uses one-fiftieth' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
+          test "$(grep -R -F 'Math.min(5000' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/{MainActivity.java,HbmService.java} | wc -l)" -eq 3
+          ! grep -F 'screenOrientation="portrait"' hbc-src/app/src/main/AndroidManifest.xml
+          grep -F 'versionCode 4' hbc-src/app/build.gradle
+          grep -F "versionName '2.2'" hbc-src/app/build.gradle
           grep -F 'printf' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java
           ! grep -R -F 'new String[]{"su", "-c"' hbc-src/app/src/main/java
           sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' hbc-src/app/build.gradle
@@ -45,11 +91,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifact
-          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_v2.1_UNSIGNED_ALIGNED.apk
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_v2.2_UNSIGNED_ALIGNED.apk
           cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" artifact/apksigner.jar
-          sha256sum artifact/High_Brightness_Control_v2.1_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
+          sha256sum artifact/High_Brightness_Control_v2.2_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: high-brightness-control-v2-1-final
+          name: high-brightness-control-v2-2
           path: artifact/*
           if-no-files-found: error
