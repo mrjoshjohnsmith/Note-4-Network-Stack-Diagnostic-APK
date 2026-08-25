@@ -1,0 +1,463 @@
+--- a/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
++++ b/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
+@@ -2,6 +2,7 @@
+ 
+ import android.app.Notification;
+ import android.app.PendingIntent;
++import android.app.NotificationManager;
+ import android.app.Service;
+ import android.widget.RemoteViews;
+ import android.content.Context;
+@@ -22,6 +23,7 @@
+ public class HbmService extends Service implements SensorEventListener, SharedPreferences.OnSharedPreferenceChangeListener {
+     public static final String ACTION_STOP = "com.highbrightnesscontrol.note4.STOP";
+     public static final String ACTION_RESTORE_AND_STOP = "com.highbrightnesscontrol.note4.RESTORE_AND_STOP";
++    public static final String ACTION_TOGGLE_MASTER = "com.highbrightnesscontrol.note4.TOGGLE_MASTER";
+     public static final String ACTION_STATE = "com.highbrightnesscontrol.note4.STATE";
+     public static final String EXTRA_STATE = "state";
+     public static final String EXTRA_LUX = "lux";
+@@ -47,6 +49,13 @@
+     private volatile boolean appForcedHbm;
+     private volatile boolean autoBrightnessOverrideActive;
+     private volatile boolean thermalBypassActive;
++    private volatile boolean stockSuppressionActive;
++    private volatile int lastScaledBrightnessTarget = Integer.MIN_VALUE;
++    private volatile String powerBridgeBase = "";
++    private volatile String powerBridgeCommandPath = "";
++    private volatile String powerBridgeStatusPath = "";
++    private volatile String powerBridgeTokenPath = "";
++    private volatile boolean powerBridgeReady;
+     private volatile long lastStateCheck;
+     private volatile long lastThermalCheck;
+     private volatile int lastNormalAuto = -1;
+@@ -67,6 +76,7 @@
+     private volatile String baselineTemperature = "";
+     private volatile String baselineBatterySiop = "";
+     private volatile String watchTokenPath = "";
++    private volatile String lastNotificationSignature = "";
+     private volatile String lastState = "STARTING";
+     private volatile boolean rootOk;
+ 
+@@ -106,6 +116,12 @@
+             });
+             return START_NOT_STICKY;
+         }
++        if (intent != null && ACTION_TOGGLE_MASTER.equals(intent.getAction())) {
++            boolean enabled = !prefs.getBoolean(Prefs.MASTER, false);
++            prefs.edit().putBoolean(Prefs.MASTER, enabled).apply();
++            updateNotification();
++            return START_STICKY;
++        }
+         return START_STICKY;
+     }
+ 
+@@ -138,8 +154,15 @@
+     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+ 
+     @Override public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
+-        if (Prefs.MASTER.equals(key) && !sharedPreferences.getBoolean(Prefs.MASTER, false) && appForcedHbm) {
+-            io.execute(new Runnable() { @Override public void run() { releaseHbmOnce(); } });
++        if (Prefs.MASTER.equals(key) && !sharedPreferences.getBoolean(Prefs.MASTER, false)) {
++            io.execute(new Runnable() {
++                @Override public void run() {
++                    restoreSystemState();
++                    updateNotification();
++                }
++            });
++        } else {
++            updateNotification();
+         }
+     }
+ 
+@@ -279,12 +302,13 @@
+             releaseHbmOnce();
+         }
+ 
++        stockSuppressionActive = false;
+         if (master && androidAuto && sensitivity < 100 && !forceAlways && !manualDemand && !lightDemand) {
+             if (currentAuto == 6) {
+-                writeNode(autoBrightnessPath, Integer.toString(lastNormalAuto >= 0 ? lastNormalAuto : 5));
++                stockSuppressionActive = writeNode(autoBrightnessPath, Integer.toString(lastNormalAuto >= 0 ? lastNormalAuto : 5));
+             }
+             if (autoBrightnessPath.length() == 0 && currentExplicit > 0) {
+-                writeNode(explicitHbmPath, "0");
++                stockSuppressionActive |= writeNode(explicitHbmPath, "0");
+             }
+         }
+ 
+@@ -342,23 +366,90 @@
+     }
+ 
+     private void applyScaledAutoBrightness(float effectiveLux) {
+-        if (brightnessPath.length() == 0 || effectiveLux < 0f) return;
++        if (effectiveLux < 0f) return;
+         int target = samsungBrightnessForLux(effectiveLux);
+-        int current = readInt(brightnessPath, -1);
+-        if (current != target) writeNode(brightnessPath, Integer.toString(target));
+-        autoBrightnessOverrideActive = true;
++        if (!ensurePowerBridge()) {
++            autoBrightnessOverrideActive = false;
++            lastScaledBrightnessTarget = Integer.MIN_VALUE;
++            return;
++        }
++        if (!autoBrightnessOverrideActive || target != lastScaledBrightnessTarget) {
++            RootShell.Result send = RootShell.run("echo " + target + " > " + RootShell.sq(powerBridgeCommandPath));
++            if (!send.ok()) {
++                releaseScaledAutoBrightness();
++                return;
++            }
++            if (!autoBrightnessOverrideActive) {
++                RootShell.Result ack = RootShell.run(
++                        "for i in 1 2 3 4 5 6; do "
++                        + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
++                        + "grep -q " + RootShell.sq("OK:" + target) + " " + RootShell.sq(powerBridgeStatusPath) + " && exit 0; "
++                        + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
++                        + "grep -q '^ERR' " + RootShell.sq(powerBridgeStatusPath) + " && exit 1; "
++                        + "sleep 0.1; done; exit 1");
++                if (!ack.ok()) {
++                    releaseScaledAutoBrightness();
++                    return;
++                }
++            }
++            lastScaledBrightnessTarget = target;
++            autoBrightnessOverrideActive = true;
++        }
++    }
++
++    private boolean ensurePowerBridge() {
++        if (powerBridgeReady && powerBridgeTokenPath.length() > 0) return true;
++        int pid = Process.myPid();
++        if (powerBridgeBase.length() == 0) {
++            powerBridgeBase = "/data/local/tmp/hbc_power_" + pid + "_" + System.nanoTime();
++            powerBridgeCommandPath = powerBridgeBase + ".cmd";
++            powerBridgeStatusPath = powerBridgeBase + ".status";
++            powerBridgeTokenPath = powerBridgeBase + ".run";
++        }
++        RootShell.run("rm -f " + RootShell.sq(powerBridgeCommandPath) + " " + RootShell.sq(powerBridgeStatusPath)
++                + " " + RootShell.sq(powerBridgeTokenPath));
++        RootShell.Result token = RootShell.run("echo 1 > " + RootShell.sq(powerBridgeTokenPath));
++        if (!token.ok()) return false;
++
++        String apk = getApplicationInfo().sourceDir;
++        String launch = "CLASSPATH=" + RootShell.sq(apk) + " app_process /system/bin "
++                + PowerBrightnessBridge.class.getName() + " "
++                + RootShell.sq(powerBridgeCommandPath) + " " + RootShell.sq(powerBridgeStatusPath) + " "
++                + RootShell.sq(powerBridgeTokenPath) + " " + pid;
++        RootShell.run("sh -c " + RootShell.sq("(" + launch + ") >/dev/null 2>&1 </dev/null &"));
++        RootShell.Result ready = RootShell.run(
++                "for i in 1 2 3 4 5 6 7 8 9 10; do "
++                + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
++                + "grep -q '^READY$' " + RootShell.sq(powerBridgeStatusPath) + " && exit 0; "
++                + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
++                + "grep -q '^ERR' " + RootShell.sq(powerBridgeStatusPath) + " && exit 1; "
++                + "sleep 0.1; done; exit 1");
++        powerBridgeReady = ready.ok();
++        if (!powerBridgeReady) stopPowerBridge();
++        return powerBridgeReady;
++    }
++
++    private void stopPowerBridge() {
++        if (powerBridgeTokenPath.length() > 0) {
++            RootShell.run("rm -f " + RootShell.sq(powerBridgeTokenPath));
++            RootShell.run("for i in 1 2 3 4 5; do [ -r " + RootShell.sq(powerBridgeStatusPath)
++                    + " ] && grep -q '^RELEASED$' " + RootShell.sq(powerBridgeStatusPath)
++                    + " && break; sleep 0.1; done; rm -f " + RootShell.sq(powerBridgeCommandPath) + " "
++                    + RootShell.sq(powerBridgeStatusPath) + " " + RootShell.sq(powerBridgeTokenPath));
++        }
++        powerBridgeReady = false;
+     }
+ 
+     private void releaseScaledAutoBrightness() {
+-        boolean androidAuto = false;
+-        try {
+-            androidAuto = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE)
+-                    == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC;
+-        } catch (Throwable ignored) {}
+-        if (androidAuto && brightnessPath.length() > 0 && filteredLux >= 0f) {
+-            writeNode(brightnessPath, Integer.toString(samsungBrightnessForLux(filteredLux)));
++        if (powerBridgeReady && powerBridgeCommandPath.length() > 0) {
++            RootShell.run("echo -1 > " + RootShell.sq(powerBridgeCommandPath));
++            RootShell.run("for i in 1 2 3 4 5; do [ -r " + RootShell.sq(powerBridgeStatusPath)
++                    + " ] && grep -q '^OK:-1$' " + RootShell.sq(powerBridgeStatusPath)
++                    + " && break; sleep 0.1; done");
+         }
++        stopPowerBridge();
+         autoBrightnessOverrideActive = false;
++        lastScaledBrightnessTarget = Integer.MIN_VALUE;
+     }
+ 
+     private int samsungBrightnessForLux(float lux) {
+@@ -396,6 +487,7 @@
+         if (autoBrightnessPath.length() > 0 && baselineAuto.length() > 0) restoreNode(autoBrightnessPath, baselineAuto);
+         if (explicitHbmPath.length() > 0 && baselineExplicit.length() > 0) restoreNode(explicitHbmPath, baselineExplicit);
+         if (mdnieOutdoorPath.length() > 0) writeNode(mdnieOutdoorPath, "0");
++        stockSuppressionActive = false;
+     }
+ 
+     private void restoreNode(String path, String value) {
+@@ -467,15 +559,50 @@
+         i.putExtra(EXTRA_EFFECTIVE_LUX, filteredLux < 0 ? -1f : filteredLux * (s / 100f));
+         i.putExtra(EXTRA_HBM, appForcedHbm);
+         sendBroadcast(i);
++        updateNotification();
++    }
++
++    private String notificationStatus() {
++        boolean master = prefs != null && prefs.getBoolean(Prefs.MASTER, false);
++        if (!master) return "OFF · STOCK SETTINGS";
++        if (appForcedHbm) {
++            if (lastState.startsWith("HBM")) return "ACTIVE · " + lastState.substring(6);
++            return "ACTIVE · HBM";
++        }
++        if (autoBrightnessOverrideActive) return "ACTIVE · AUTO MULTIPLIER";
++        if (thermalBypassActive) return "ACTIVE · THERMAL BYPASS";
++        if (stockSuppressionActive) return "ACTIVE · HBM LIMITED";
++        return "ENABLED · MONITORING";
++    }
++
++    private void updateNotification() {
++        if (prefs == null) return;
++        boolean master = prefs.getBoolean(Prefs.MASTER, false);
++        String status = notificationStatus();
++        String signature = (master ? "1" : "0") + "|" + status;
++        if (signature.equals(lastNotificationSignature)) return;
++        lastNotificationSignature = signature;
++        NotificationManager nm = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
++        if (nm != null) nm.notify(4040, buildNotification());
+     }
+ 
+     private Notification buildNotification() {
+         Intent open = new Intent(this, MainActivity.class);
+         PendingIntent pi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT);
++
++        Intent toggle = new Intent(this, HbmService.class).setAction(ACTION_TOGGLE_MASTER);
++        PendingIntent togglePi = PendingIntent.getService(this, 4041, toggle, PendingIntent.FLAG_UPDATE_CURRENT);
++        Intent exit = new Intent(this, HbmService.class).setAction(ACTION_RESTORE_AND_STOP);
++        PendingIntent exitPi = PendingIntent.getService(this, 4042, exit, PendingIntent.FLAG_UPDATE_CURRENT);
++
++        boolean master = prefs != null && prefs.getBoolean(Prefs.MASTER, false);
+         RemoteViews content = new RemoteViews(getPackageName(), R.layout.notification_hbc);
+         content.setImageViewResource(R.id.notification_icon, R.mipmap.ic_launcher);
+         content.setTextViewText(R.id.notification_title, "High Brightness Control");
+-        content.setTextViewText(R.id.notification_text, "HBM controller active");
++        content.setTextViewText(R.id.notification_text, notificationStatus());
++        content.setTextViewText(R.id.notification_toggle, master ? "OFF" : "ON");
++        content.setOnClickPendingIntent(R.id.notification_toggle, togglePi);
++        content.setOnClickPendingIntent(R.id.notification_exit, exitPi);
+         return new Notification.Builder(this)
+                 .setSmallIcon(R.drawable.ic_stat_sun)
+                 .setContentIntent(pi)
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -8,8 +8,8 @@
+         applicationId 'com.highbrightnesscontrol.note4'
+         minSdk 23
+         targetSdk 23
+-        versionCode 7
+-        versionName '3.1 Final'
++        versionCode 8
++        versionName '3.2 Final'
+     }
+ 
+     buildTypes {
+--- a/app/src/main/res/layout/notification_hbc.xml
++++ b/app/src/main/res/layout/notification_hbc.xml
+@@ -1,17 +1,17 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+     android:layout_width="match_parent"
+-    android:layout_height="64dp"
++    android:layout_height="68dp"
+     android:orientation="horizontal"
+     android:gravity="center_vertical"
+-    android:paddingLeft="12dp"
+-    android:paddingRight="12dp"
++    android:paddingLeft="8dp"
++    android:paddingRight="8dp"
+     android:background="#000000">
+ 
+     <ImageView
+         android:id="@+id/notification_icon"
+-        android:layout_width="42dp"
+-        android:layout_height="42dp"
++        android:layout_width="36dp"
++        android:layout_height="36dp"
+         android:scaleType="fitCenter"
+         android:contentDescription="@string/app_name" />
+ 
+@@ -20,14 +20,15 @@
+         android:layout_height="wrap_content"
+         android:layout_weight="1"
+         android:orientation="vertical"
+-        android:paddingLeft="12dp">
++        android:paddingLeft="8dp"
++        android:paddingRight="4dp">
+ 
+         <TextView
+             android:id="@+id/notification_title"
+             android:layout_width="match_parent"
+             android:layout_height="wrap_content"
+             android:textColor="#FFFFFFFF"
+-            android:textSize="15sp"
++            android:textSize="12sp"
+             android:textStyle="bold"
+             android:maxLines="1" />
+ 
+@@ -37,7 +38,31 @@
+             android:layout_height="wrap_content"
+             android:layout_marginTop="2dp"
+             android:textColor="#FFFFFFFF"
+-            android:textSize="12sp"
++            android:textSize="10sp"
+             android:maxLines="1" />
+     </LinearLayout>
++
++    <TextView
++        android:id="@+id/notification_toggle"
++        android:layout_width="40dp"
++        android:layout_height="32dp"
++        android:gravity="center"
++        android:background="@drawable/notification_button"
++        android:textColor="#FFFFFFFF"
++        android:textSize="10sp"
++        android:textStyle="bold"
++        android:clickable="true" />
++
++    <TextView
++        android:id="@+id/notification_exit"
++        android:layout_width="42dp"
++        android:layout_height="32dp"
++        android:layout_marginLeft="4dp"
++        android:gravity="center"
++        android:background="@drawable/notification_button"
++        android:text="EXIT"
++        android:textColor="#FFFFFFFF"
++        android:textSize="10sp"
++        android:textStyle="bold"
++        android:clickable="true" />
+ </LinearLayout>
+--- a/app/src/main/res/drawable/notification_button.xml
++++ b/app/src/main/res/drawable/notification_button.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
++    <solid android:color="#000000" />
++    <stroke android:width="1dp" android:color="#FFFFC107" />
++    <corners android:radius="3dp" />
++    <padding android:left="2dp" android:top="1dp" android:right="2dp" android:bottom="1dp" />
++</shape>
+--- a/app/src/main/java/com/highbrightnesscontrol/note4/PowerBrightnessBridge.java
++++ b/app/src/main/java/com/highbrightnesscontrol/note4/PowerBrightnessBridge.java
+@@ -0,0 +1,112 @@
++package com.highbrightnesscontrol.note4;
++
++import java.io.BufferedReader;
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.FileWriter;
++import java.io.InputStreamReader;
++import java.lang.reflect.Method;
++
++public final class PowerBrightnessBridge {
++    private static void writeStatus(String path, String value) {
++        FileWriter w = null;
++        try {
++            w = new FileWriter(path, false);
++            w.write(value);
++            w.write('\n');
++            w.flush();
++        } catch (Throwable ignored) {
++        } finally {
++            try { if (w != null) w.close(); } catch (Throwable ignored) {}
++        }
++    }
++
++    private static String readFirstLine(String path) {
++        BufferedReader r = null;
++        try {
++            r = new BufferedReader(new InputStreamReader(new FileInputStream(path)));
++            return r.readLine();
++        } catch (Throwable ignored) {
++            return null;
++        } finally {
++            try { if (r != null) r.close(); } catch (Throwable ignored) {}
++        }
++    }
++
++    private static boolean ownerAlive(int pid) {
++        File f = new File("/proc/" + pid + "/cmdline");
++        if (!f.isFile()) return false;
++        FileInputStream in = null;
++        try {
++            in = new FileInputStream(f);
++            byte[] b = new byte[512];
++            int n = in.read(b);
++            if (n <= 0) return false;
++            String cmd = new String(b, 0, n, "UTF-8").replace('\0', ' ');
++            return cmd.indexOf("com.highbrightnesscontrol.note4") >= 0;
++        } catch (Throwable ignored) {
++            return false;
++        } finally {
++            try { if (in != null) in.close(); } catch (Throwable ignored) {}
++        }
++    }
++
++    public static void main(String[] args) {
++        if (args == null || args.length != 4) return;
++        String commandPath = args[0];
++        String statusPath = args[1];
++        String tokenPath = args[2];
++        int ownerPid;
++        try { ownerPid = Integer.parseInt(args[3]); }
++        catch (Throwable t) { writeStatus(statusPath, "ERR"); return; }
++
++        Object power = null;
++        Method setTemporary = null;
++        int last = Integer.MIN_VALUE;
++        try {
++            Class<?> serviceManager = Class.forName("android.os.ServiceManager");
++            Method getService = serviceManager.getDeclaredMethod("getService", String.class);
++            getService.setAccessible(true);
++            Object binder = getService.invoke(null, "power");
++            if (binder == null) throw new IllegalStateException("power service unavailable");
++
++            Class<?> iBinder = Class.forName("android.os.IBinder");
++            Class<?> stub = Class.forName("android.os.IPowerManager$Stub");
++            Method asInterface = stub.getDeclaredMethod("asInterface", iBinder);
++            asInterface.setAccessible(true);
++            power = asInterface.invoke(null, binder);
++            if (power == null) throw new IllegalStateException("power interface unavailable");
++
++            Class<?> iPower = Class.forName("android.os.IPowerManager");
++            setTemporary = iPower.getMethod("setTemporaryScreenBrightnessSettingOverride", Integer.TYPE);
++            setTemporary.setAccessible(true);
++            writeStatus(statusPath, "READY");
++
++            while (new File(tokenPath).isFile() && ownerAlive(ownerPid)) {
++                String line = readFirstLine(commandPath);
++                if (line != null) {
++                    try {
++                        int target = Integer.parseInt(line.trim());
++                        if (target != last) {
++                            setTemporary.invoke(power, Integer.valueOf(target));
++                            last = target;
++                            writeStatus(statusPath, "OK:" + target);
++                        }
++                    } catch (Throwable t) {
++                        writeStatus(statusPath, "ERR");
++                    }
++                }
++                try { Thread.sleep(100L); } catch (InterruptedException ignored) {}
++            }
++        } catch (Throwable t) {
++            writeStatus(statusPath, "ERR");
++        } finally {
++            if (power != null && setTemporary != null && last != -1) {
++                try { setTemporary.invoke(power, Integer.valueOf(-1)); } catch (Throwable ignored) {}
++            }
++            writeStatus(statusPath, "RELEASED");
++        }
++    }
++
++    private PowerBrightnessBridge() {}
++}
