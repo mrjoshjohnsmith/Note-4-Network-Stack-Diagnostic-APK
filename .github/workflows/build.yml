@@ -1,4 +1,4 @@
-name: Build High Brightness Control 2.3
+name: Build High Brightness Control V3 Final
 on:
   push:
     branches: [ high-brightness-control-v2 ]
@@ -19,7 +19,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Materialize verified v2.2 baseline and apply v2.3 patch
+      - name: Materialize verified v2.2 baseline and apply V3 Final patch
         shell: bash
         run: |
           echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
@@ -69,25 +69,25 @@ jobs:
           PY
 
           cd hbc-src
-          patch -p1 --fuzz=0 < ../hbc-v2.3.patch
+          patch -p1 --fuzz=0 < ../hbc-v3-final.patch
           cd ..
 
           MAIN=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
           SERVICE=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
           ROOT=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java
           grep -F 'sensitivity.setMax(200);' "$MAIN"
-          grep -F '0–20,000%' "$MAIN"
+          grep -F '0–1,000,000%' "$MAIN"
           grep -F 'showSensitivityEntry()' "$MAIN"
-          grep -F 'Math.min(20000' "$MAIN"
-          test "$(grep -F 'Math.min(20000' "$SERVICE" | wc -l)" -eq 2
+          grep -F 'Math.min(1000000' "$MAIN"
+          test "$(grep -F 'Math.min(1000000' "$SERVICE" | wc -l)" -eq 2
           ! grep -F 'ACTION_RESCAN' "$SERVICE"
           ! grep -F 'Button scan' "$MAIN"
           ! grep -F 'Button apply' "$MAIN"
           ! grep -F 'text("Control"' "$MAIN"
           grep -F 'io.execute(new Runnable() { @Override public void run() { scanPaths(); } });' "$SERVICE"
           ! grep -F 'screenOrientation="portrait"' hbc-src/app/src/main/AndroidManifest.xml
-          grep -F 'versionCode 5' hbc-src/app/build.gradle
-          grep -F "versionName '2.3'" hbc-src/app/build.gradle
+          grep -F 'versionCode 6' hbc-src/app/build.gradle
+          grep -F "versionName '3 Final'" hbc-src/app/build.gradle
           grep -F 'printf' "$ROOT"
           ! grep -R -F 'new String[]{"su", "-c"' hbc-src/app/src/main/java
           ! grep -R -F 'setenforce' hbc-src/app/src/main/java
@@ -100,11 +100,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifact
-          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_v2.3_UNSIGNED_ALIGNED.apk
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_V3_Final_UNSIGNED_ALIGNED.apk
           cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" artifact/apksigner.jar
-          sha256sum artifact/High_Brightness_Control_v2.3_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
+          sha256sum artifact/High_Brightness_Control_V3_Final_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: high-brightness-control-v2-3
+          name: high-brightness-control-v3-final
           path: artifact/*
           if-no-files-found: error
