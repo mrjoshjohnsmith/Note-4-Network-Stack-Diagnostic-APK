@@ -1,4 +1,4 @@
-name: Build High Brightness Control V3.1 Final
+name: Build High Brightness Control V3.2 Final
 on:
   push:
     branches: [ high-brightness-control-v2 ]
@@ -19,7 +19,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Materialize verified V3 Final baseline and apply V3.1 Final patch
+      - name: Materialize verified V3.1 Final baseline and apply V3.2 Final patch
         shell: bash
         run: |
           echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
@@ -87,11 +87,20 @@ jobs:
           mkdir -p hbc-src/app/src/main/res/layout
           cp v31flat/notification_hbc.xml hbc-src/app/src/main/res/layout/notification_hbc.xml
 
+          echo '1a7f8ded696b109b5471f3b5838ac408b07ff82029a8c47e7e33338b77925bbf  hbc-v3.2-final.patch' | sha256sum -c -
+          cd hbc-src
+          patch -p1 --fuzz=0 < ../hbc-v3.2-final.patch
+          cd ..
+
           MAIN=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
           SERVICE=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
+          BRIDGE=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/PowerBrightnessBridge.java
           PREFS=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/Prefs.java
           ROOT=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java
           NOTE=hbc-src/app/src/main/res/layout/notification_hbc.xml
+          BUTTON=hbc-src/app/src/main/res/drawable/notification_button.xml
+          MANIFEST=hbc-src/app/src/main/AndroidManifest.xml
+
           grep -F 'sensitivity.setMax(200);' "$MAIN"
           grep -F '0–1,000,000%' "$MAIN"
           grep -F 'Apply multiplier to Samsung auto brightness' "$MAIN"
@@ -100,20 +109,35 @@ jobs:
           grep -F 'APPLY_TO_AUTO_BRIGHTNESS' "$PREFS"
           grep -F 'SCREEN_BRIGHTNESS_MODE_AUTOMATIC' "$SERVICE"
           grep -F 'samsungBrightnessForLux' "$SERVICE"
-          grep -F 'startForceStopWatcher' "$SERVICE"
+          grep -F 'PowerBrightnessBridge.class.getName()' "$SERVICE"
+          grep -F 'ACTION_TOGGLE_MASTER' "$SERVICE"
           grep -F 'ACTION_RESTORE_AND_STOP' "$SERVICE"
-          grep -F 'RemoteViews' "$SERVICE"
+          grep -F 'OFF · STOCK SETTINGS' "$SERVICE"
+          grep -F 'ENABLED · MONITORING' "$SERVICE"
+          grep -F 'ACTIVE · AUTO MULTIPLIER' "$SERVICE"
+          grep -F 'notification_toggle' "$SERVICE"
+          grep -F 'notification_exit' "$SERVICE"
+          grep -F 'setTemporaryScreenBrightnessSettingOverride' "$BRIDGE"
+          grep -F 'ownerAlive(ownerPid)' "$BRIDGE"
+          grep -F 'Integer.valueOf(-1)' "$BRIDGE"
+          grep -F 'android:id="@+id/notification_toggle"' "$NOTE"
+          grep -F 'android:id="@+id/notification_exit"' "$NOTE"
           grep -F 'android:background="#000000"' "$NOTE"
           grep -F 'android:textColor="#FFFFFFFF"' "$NOTE"
-          ! grep -F 'ACTION_RESCAN' "$SERVICE"
-          ! grep -F 'screenOrientation="portrait"' hbc-src/app/src/main/AndroidManifest.xml
-          grep -F 'versionCode 7' hbc-src/app/build.gradle
-          grep -F "versionName '3.1 Final'" hbc-src/app/build.gradle
+          grep -F '<solid android:color="#000000"' "$BUTTON"
+          grep -F 'versionCode 8' hbc-src/app/build.gradle
+          grep -F "versionName '3.2 Final'" hbc-src/app/build.gradle
+          grep -F "applicationId 'com.highbrightnesscontrol.note4'" hbc-src/app/build.gradle
           grep -F 'printf' "$ROOT"
+          ! grep -F 'writeNode(brightnessPath' "$SERVICE"
+          ! grep -R -F 'service call power' hbc-src/app/src/main/java
           ! grep -R -F 'new String[]{"su", "-c"' hbc-src/app/src/main/java
           ! grep -R -F 'setenforce' hbc-src/app/src/main/java
           ! grep -R -F '/sys/class/sensors/light_sensor/lux' hbc-src/app/src/main/java
           ! grep -R -F '/sys/class/sensors/light_sensor/raw_data' hbc-src/app/src/main/java
+          ! grep -F 'screenOrientation="portrait"' "$MANIFEST"
+          test "$(grep -c '<uses-permission' "$MANIFEST")" -eq 1
+          grep -F 'android.permission.RECEIVE_BOOT_COMPLETED' "$MANIFEST"
           sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' hbc-src/app/build.gradle
       - name: Build release APK
         working-directory: hbc-src
@@ -122,11 +146,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifact
-          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_V3.1_Final_UNSIGNED_ALIGNED.apk
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_V3.2_Final_UNSIGNED_ALIGNED.apk
           cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" artifact/apksigner.jar
-          sha256sum artifact/High_Brightness_Control_V3.1_Final_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
+          sha256sum artifact/High_Brightness_Control_V3.2_Final_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: high-brightness-control-v3-1-final
+          name: high-brightness-control-v3-2-final
           path: artifact/*
           if-no-files-found: error
