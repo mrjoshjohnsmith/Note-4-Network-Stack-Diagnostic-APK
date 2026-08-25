@@ -1,0 +1,372 @@
+--- a/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
++++ b/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
+@@ -17,6 +17,10 @@
+ import android.os.Looper;
+ import android.os.Process;
+ import android.provider.Settings;
++import java.io.BufferedReader;
++import java.io.File;
++import java.io.FileReader;
++import java.io.FileWriter;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+ 
+@@ -56,6 +60,9 @@
+     private volatile String powerBridgeStatusPath = "";
+     private volatile String powerBridgeTokenPath = "";
+     private volatile boolean powerBridgeReady;
++    private volatile boolean powerBridgeLaunchRequested;
++    private volatile boolean powerBridgeFailed;
++    private volatile long powerBridgeLaunchTime;
+     private volatile long lastStateCheck;
+     private volatile long lastThermalCheck;
+     private volatile int lastNormalAuto = -1;
+@@ -155,6 +162,7 @@
+ 
+     @Override public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
+         if (Prefs.MASTER.equals(key) && !sharedPreferences.getBoolean(Prefs.MASTER, false)) {
++            powerBridgeFailed = false;
+             io.execute(new Runnable() {
+                 @Override public void run() {
+                     restoreSystemState();
+@@ -162,6 +170,10 @@
+                 }
+             });
+         } else {
++            if (Prefs.APPLY_TO_AUTO_BRIGHTNESS.equals(key)
++                    && !sharedPreferences.getBoolean(Prefs.APPLY_TO_AUTO_BRIGHTNESS, false)) {
++                powerBridgeFailed = false;
++            }
+             updateNotification();
+         }
+     }
+@@ -266,7 +278,7 @@
+ 
+         if (master && applyToSamsungAuto && androidAuto && sensitivity != 100 && lux >= 0f) {
+             applyScaledAutoBrightness(effective);
+-        } else if (autoBrightnessOverrideActive) {
++        } else if (autoBrightnessOverrideActive || powerBridgeLaunchRequested) {
+             releaseScaledAutoBrightness();
+         }
+ 
+@@ -366,92 +378,114 @@
+     }
+ 
+     private void applyScaledAutoBrightness(float effectiveLux) {
+-        if (effectiveLux < 0f) return;
++        if (effectiveLux < 0f || powerBridgeFailed) return;
+         int target = samsungBrightnessForLux(effectiveLux);
+-        if (!ensurePowerBridge()) {
+-            autoBrightnessOverrideActive = false;
+-            lastScaledBrightnessTarget = Integer.MIN_VALUE;
+-            return;
+-        }
+-        if (!autoBrightnessOverrideActive || target != lastScaledBrightnessTarget) {
+-            RootShell.Result send = RootShell.run("echo " + target + " > " + RootShell.sq(powerBridgeCommandPath));
+-            if (!send.ok()) {
+-                releaseScaledAutoBrightness();
++
++        if (powerBridgeBase.length() == 0) {
++            powerBridgeBase = new File(getFilesDir(), "hbc_power_" + Process.myPid()).getAbsolutePath();
++            powerBridgeCommandPath = powerBridgeBase + ".cmd";
++            powerBridgeStatusPath = powerBridgeBase + ".status";
++            powerBridgeTokenPath = powerBridgeBase + ".run";
++        }
++
++        if (!powerBridgeLaunchRequested) {
++            deleteLocal(powerBridgeStatusPath);
++            if (!writeLocal(powerBridgeCommandPath, Integer.toString(target))
++                    || !writeLocal(powerBridgeTokenPath, "1")) {
++                powerBridgeFailed = true;
+                 return;
+             }
+-            if (!autoBrightnessOverrideActive) {
+-                RootShell.Result ack = RootShell.run(
+-                        "for i in 1 2 3 4 5 6; do "
+-                        + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
+-                        + "grep -q " + RootShell.sq("OK:" + target) + " " + RootShell.sq(powerBridgeStatusPath) + " && exit 0; "
+-                        + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
+-                        + "grep -q '^ERR' " + RootShell.sq(powerBridgeStatusPath) + " && exit 1; "
+-                        + "sleep 0.1; done; exit 1");
+-                if (!ack.ok()) {
+-                    releaseScaledAutoBrightness();
+-                    return;
+-                }
++
++            String apk = getApplicationInfo().sourceDir;
++            String launch = "CLASSPATH=" + RootShell.sq(apk) + " app_process /system/bin "
++                    + PowerBrightnessBridge.class.getName() + " "
++                    + RootShell.sq(powerBridgeCommandPath) + " " + RootShell.sq(powerBridgeStatusPath) + " "
++                    + RootShell.sq(powerBridgeTokenPath) + " " + Process.myPid();
++            RootShell.Result r = RootShell.run("sh -c " + RootShell.sq("(" + launch + ") >/dev/null 2>&1 </dev/null &"));
++            if (!r.ok()) {
++                powerBridgeFailed = true;
++                deleteLocal(powerBridgeTokenPath);
++                return;
+             }
++            powerBridgeLaunchRequested = true;
++            powerBridgeLaunchTime = System.currentTimeMillis();
+             lastScaledBrightnessTarget = target;
+-            autoBrightnessOverrideActive = true;
++        } else if (target != lastScaledBrightnessTarget) {
++            if (writeLocal(powerBridgeCommandPath, Integer.toString(target))) {
++                lastScaledBrightnessTarget = target;
++            }
+         }
+-    }
+ 
+-    private boolean ensurePowerBridge() {
+-        if (powerBridgeReady && powerBridgeTokenPath.length() > 0) return true;
+-        int pid = Process.myPid();
+-        if (powerBridgeBase.length() == 0) {
+-            powerBridgeBase = "/data/local/tmp/hbc_power_" + pid + "_" + System.nanoTime();
+-            powerBridgeCommandPath = powerBridgeBase + ".cmd";
+-            powerBridgeStatusPath = powerBridgeBase + ".status";
+-            powerBridgeTokenPath = powerBridgeBase + ".run";
++        String status = readLocal(powerBridgeStatusPath);
++        if (status.startsWith("OK:")) {
++            try {
++                int applied = Integer.parseInt(status.substring(3).trim());
++                powerBridgeReady = true;
++                autoBrightnessOverrideActive = applied >= 0;
++            } catch (Throwable ignored) {}
++        } else if (status.startsWith("READY")) {
++            powerBridgeReady = true;
++        } else if (status.startsWith("ERR")) {
++            powerBridgeFailed = true;
++            releaseScaledAutoBrightness();
++        } else if (powerBridgeLaunchRequested
++                && System.currentTimeMillis() - powerBridgeLaunchTime > 2000L) {
++            powerBridgeFailed = true;
++            releaseScaledAutoBrightness();
+         }
+-        RootShell.run("rm -f " + RootShell.sq(powerBridgeCommandPath) + " " + RootShell.sq(powerBridgeStatusPath)
+-                + " " + RootShell.sq(powerBridgeTokenPath));
+-        RootShell.Result token = RootShell.run("echo 1 > " + RootShell.sq(powerBridgeTokenPath));
+-        if (!token.ok()) return false;
+-
+-        String apk = getApplicationInfo().sourceDir;
+-        String launch = "CLASSPATH=" + RootShell.sq(apk) + " app_process /system/bin "
+-                + PowerBrightnessBridge.class.getName() + " "
+-                + RootShell.sq(powerBridgeCommandPath) + " " + RootShell.sq(powerBridgeStatusPath) + " "
+-                + RootShell.sq(powerBridgeTokenPath) + " " + pid;
+-        RootShell.run("sh -c " + RootShell.sq("(" + launch + ") >/dev/null 2>&1 </dev/null &"));
+-        RootShell.Result ready = RootShell.run(
+-                "for i in 1 2 3 4 5 6 7 8 9 10; do "
+-                + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
+-                + "grep -q '^READY$' " + RootShell.sq(powerBridgeStatusPath) + " && exit 0; "
+-                + "[ -r " + RootShell.sq(powerBridgeStatusPath) + " ] && "
+-                + "grep -q '^ERR' " + RootShell.sq(powerBridgeStatusPath) + " && exit 1; "
+-                + "sleep 0.1; done; exit 1");
+-        powerBridgeReady = ready.ok();
+-        if (!powerBridgeReady) stopPowerBridge();
+-        return powerBridgeReady;
+     }
+ 
+     private void stopPowerBridge() {
+-        if (powerBridgeTokenPath.length() > 0) {
+-            RootShell.run("rm -f " + RootShell.sq(powerBridgeTokenPath));
+-            RootShell.run("for i in 1 2 3 4 5; do [ -r " + RootShell.sq(powerBridgeStatusPath)
+-                    + " ] && grep -q '^RELEASED$' " + RootShell.sq(powerBridgeStatusPath)
+-                    + " && break; sleep 0.1; done; rm -f " + RootShell.sq(powerBridgeCommandPath) + " "
+-                    + RootShell.sq(powerBridgeStatusPath) + " " + RootShell.sq(powerBridgeTokenPath));
+-        }
++        deleteLocal(powerBridgeTokenPath);
+         powerBridgeReady = false;
++        powerBridgeLaunchRequested = false;
++        powerBridgeLaunchTime = 0L;
+     }
+ 
+     private void releaseScaledAutoBrightness() {
+-        if (powerBridgeReady && powerBridgeCommandPath.length() > 0) {
+-            RootShell.run("echo -1 > " + RootShell.sq(powerBridgeCommandPath));
+-            RootShell.run("for i in 1 2 3 4 5; do [ -r " + RootShell.sq(powerBridgeStatusPath)
+-                    + " ] && grep -q '^OK:-1$' " + RootShell.sq(powerBridgeStatusPath)
+-                    + " && break; sleep 0.1; done");
++        if (powerBridgeLaunchRequested && powerBridgeCommandPath.length() > 0) {
++            writeLocal(powerBridgeCommandPath, "-1");
+         }
+         stopPowerBridge();
+         autoBrightnessOverrideActive = false;
+         lastScaledBrightnessTarget = Integer.MIN_VALUE;
+     }
+ 
++    private boolean writeLocal(String path, String value) {
++        if (path == null || path.length() == 0) return false;
++        FileWriter w = null;
++        try {
++            w = new FileWriter(path, false);
++            w.write(value);
++            w.write('\n');
++            w.flush();
++            return true;
++        } catch (Throwable ignored) {
++            return false;
++        } finally {
++            try { if (w != null) w.close(); } catch (Throwable ignored) {}
++        }
++    }
++
++    private String readLocal(String path) {
++        if (path == null || path.length() == 0) return "";
++        BufferedReader r = null;
++        try {
++            r = new BufferedReader(new FileReader(path));
++            String line = r.readLine();
++            return line == null ? "" : line.trim();
++        } catch (Throwable ignored) {
++            return "";
++        } finally {
++            try { if (r != null) r.close(); } catch (Throwable ignored) {}
++        }
++    }
++
++    private void deleteLocal(String path) {
++        if (path == null || path.length() == 0) return;
++        try { new File(path).delete(); } catch (Throwable ignored) {}
++    }
++
+     private int samsungBrightnessForLux(float lux) {
+         final float[] x = {0f, 6f, 50f, 500f, 1000f, 4999f, 5000f};
+         final int[] y = {30, 30, 59, 134, 161, 219, 255};
+@@ -481,7 +515,7 @@
+     }
+ 
+     private void restoreSystemState() {
+-        if (autoBrightnessOverrideActive) releaseScaledAutoBrightness();
++        if (autoBrightnessOverrideActive || powerBridgeLaunchRequested) releaseScaledAutoBrightness();
+         if (appForcedHbm) releaseHbmOnce();
+         restoreThermalState();
+         if (autoBrightnessPath.length() > 0 && baselineAuto.length() > 0) restoreNode(autoBrightnessPath, baselineAuto);
+--- a/app/src/main/java/com/highbrightnesscontrol/note4/PowerBrightnessBridge.java
++++ b/app/src/main/java/com/highbrightnesscontrol/note4/PowerBrightnessBridge.java
+@@ -1,13 +1,20 @@
+ package com.highbrightnesscontrol.note4;
+ 
++import android.os.IBinder;
++import android.os.Parcel;
++import android.util.Log;
+ import java.io.BufferedReader;
+ import java.io.File;
+ import java.io.FileInputStream;
+ import java.io.FileWriter;
+ import java.io.InputStreamReader;
++import java.lang.reflect.Field;
+ import java.lang.reflect.Method;
+ 
+ public final class PowerBrightnessBridge {
++    private static final String TAG = "HBCPowerBridge";
++    private static final String DESCRIPTOR = "android.os.IPowerManager";
++
+     private static void writeStatus(String path, String value) {
+         FileWriter w = null;
+         try {
+@@ -51,6 +58,29 @@
+         }
+     }
+ 
++    private static int markerTransactionCode() throws Exception {
++        Class<?> stub = Class.forName("android.os.IPowerManager$Stub");
++        Field field = stub.getDeclaredField("TRANSACTION_setTemporaryMarkerScreenBrightnessSettingOverride");
++        field.setAccessible(true);
++        return field.getInt(null);
++    }
++
++    private static void setMarkerBrightness(IBinder binder, int transactionCode, int target) throws Exception {
++        Parcel data = Parcel.obtain();
++        Parcel reply = Parcel.obtain();
++        try {
++            data.writeInterfaceToken(DESCRIPTOR);
++            data.writeInt(target);
++            if (!binder.transact(transactionCode, data, reply, 0)) {
++                throw new IllegalStateException("power transaction not handled");
++            }
++            reply.readException();
++        } finally {
++            reply.recycle();
++            data.recycle();
++        }
++    }
++
+     public static void main(String[] args) {
+         if (args == null || args.length != 4) return;
+         String commandPath = args[0];
+@@ -58,29 +88,20 @@
+         String tokenPath = args[2];
+         int ownerPid;
+         try { ownerPid = Integer.parseInt(args[3]); }
+-        catch (Throwable t) { writeStatus(statusPath, "ERR"); return; }
++        catch (Throwable t) { writeStatus(statusPath, "ERR:ARGS"); return; }
+ 
+-        Object power = null;
+-        Method setTemporary = null;
++        IBinder binder = null;
++        int transactionCode = -1;
+         int last = Integer.MIN_VALUE;
+         try {
+             Class<?> serviceManager = Class.forName("android.os.ServiceManager");
+             Method getService = serviceManager.getDeclaredMethod("getService", String.class);
+             getService.setAccessible(true);
+-            Object binder = getService.invoke(null, "power");
++            binder = (IBinder)getService.invoke(null, "power");
+             if (binder == null) throw new IllegalStateException("power service unavailable");
+ 
+-            Class<?> iBinder = Class.forName("android.os.IBinder");
+-            Class<?> stub = Class.forName("android.os.IPowerManager$Stub");
+-            Method asInterface = stub.getDeclaredMethod("asInterface", iBinder);
+-            asInterface.setAccessible(true);
+-            power = asInterface.invoke(null, binder);
+-            if (power == null) throw new IllegalStateException("power interface unavailable");
+-
+-            Class<?> iPower = Class.forName("android.os.IPowerManager");
+-            setTemporary = iPower.getMethod("setTemporaryScreenBrightnessSettingOverride", Integer.TYPE);
+-            setTemporary.setAccessible(true);
+-            writeStatus(statusPath, "READY");
++            transactionCode = markerTransactionCode();
++            writeStatus(statusPath, "READY:MARKER:" + transactionCode);
+ 
+             while (new File(tokenPath).isFile() && ownerAlive(ownerPid)) {
+                 String line = readFirstLine(commandPath);
+@@ -88,21 +109,24 @@
+                     try {
+                         int target = Integer.parseInt(line.trim());
+                         if (target != last) {
+-                            setTemporary.invoke(power, Integer.valueOf(target));
++                            setMarkerBrightness(binder, transactionCode, target);
+                             last = target;
+                             writeStatus(statusPath, "OK:" + target);
+                         }
+                     } catch (Throwable t) {
+-                        writeStatus(statusPath, "ERR");
++                        Log.e(TAG, "marker brightness transaction failed", t);
++                        writeStatus(statusPath, "ERR:TRANSACTION:" + t.getClass().getSimpleName());
+                     }
+                 }
+                 try { Thread.sleep(100L); } catch (InterruptedException ignored) {}
+             }
+         } catch (Throwable t) {
+-            writeStatus(statusPath, "ERR");
++            Log.e(TAG, "marker brightness bridge failed", t);
++            writeStatus(statusPath, "ERR:BRIDGE:" + t.getClass().getSimpleName());
+         } finally {
+-            if (power != null && setTemporary != null && last != -1) {
+-                try { setTemporary.invoke(power, Integer.valueOf(-1)); } catch (Throwable ignored) {}
++            if (binder != null && transactionCode >= 0 && last != -1) {
++                try { setMarkerBrightness(binder, transactionCode, -1); }
++                catch (Throwable t) { Log.e(TAG, "marker brightness release failed", t); }
+             }
+             writeStatus(statusPath, "RELEASED");
+         }
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -8,8 +8,8 @@
+         applicationId 'com.highbrightnesscontrol.note4'
+         minSdk 23
+         targetSdk 23
+-        versionCode 8
+-        versionName '3.2 Final'
++        versionCode 9
++        versionName '3.3 Final'
+     }
+ 
+     buildTypes {
