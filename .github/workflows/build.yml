@@ -19,13 +19,24 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Materialize project
+      - name: Materialize verified source and harden root framing
         shell: bash
         run: |
-          echo 'cd940509ffe656bdda433466ec75b80b93da94efb5b45381bd4287d7a0fdf7d4  hbc-project-v2.1.tar.gz' | sha256sum -c -
+          echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
           gzip -t hbc-project-v2.1.tar.gz
           mkdir -p hbc-src
           tar -xzf hbc-project-v2.1.tar.gz -C hbc-src
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java')
+          s=p.read_text()
+          old='                input.write("rc=$?; echo " + marker + "$rc");'
+          new='                input.write("rc=$?; printf \'\\\\n" + marker + "%s\\\\n\' \\"$rc\\"");'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old,new))
+          PY
+          grep -F 'printf' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java
+          ! grep -R -F 'new String[]{"su", "-c"' hbc-src/app/src/main/java
           sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' hbc-src/app/build.gradle
       - name: Build release APK
         working-directory: hbc-src
@@ -39,6 +50,6 @@ jobs:
           sha256sum artifact/High_Brightness_Control_v2.1_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: high-brightness-control-v2-1
+          name: high-brightness-control-v2-1-final
           path: artifact/*
           if-no-files-found: error
