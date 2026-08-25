@@ -1,6 +1,7 @@
-name: Build Note4 CA Transfer APK
+name: Build High Brightness Control
 on:
   push:
+    branches: [ high-brightness-control-v2 ]
   workflow_dispatch:
 
 jobs:
@@ -21,22 +22,24 @@ jobs:
       - name: Materialize project
         shell: bash
         run: |
-          cat project-v1.0.part00 project-v1.0.part01 project-v1.0.part02 project-v1.0.part03 project-v1.0.part04 | base64 -d > /tmp/project.tar.gz
-          echo '1def27e3a01124d995a563d6c1b7bef0eb9e12dc594000e155ccdc2835728830  /tmp/project.tar.gz' | sha256sum -c -
-          gzip -t /tmp/project.tar.gz
-          tar -xzf /tmp/project.tar.gz
-          sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' app/build.gradle
+          cat hbc-project.part00 hbc-project.part01 | base64 -d > /tmp/hbc-project.tar.gz
+          echo 'da223e54d198c6d6cbf9692879cb245c10125c138e344733e84bee5c09fbfbaf  /tmp/hbc-project.tar.gz' | sha256sum -c -
+          gzip -t /tmp/hbc-project.tar.gz
+          mkdir -p hbc-src
+          tar -xzf /tmp/hbc-project.tar.gz -C hbc-src
+          sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' hbc-src/app/build.gradle
       - name: Build release APK
+        working-directory: hbc-src
         run: gradle :app:assembleRelease --no-daemon
-      - name: Zipalign unsigned APK
+      - name: Prepare unsigned APK
         shell: bash
         run: |
           mkdir -p artifact
-          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk artifact/Note4_CA_Transfer_System_Installer_v1.0_UNSIGNED_ALIGNED.apk
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_v2_UNSIGNED_ALIGNED.apk
           cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" artifact/apksigner.jar
-          sha256sum artifact/Note4_CA_Transfer_System_Installer_v1.0_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
+          sha256sum artifact/High_Brightness_Control_v2_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: note4-ca-build
+          name: high-brightness-control-v2
           path: artifact/*
           if-no-files-found: error
