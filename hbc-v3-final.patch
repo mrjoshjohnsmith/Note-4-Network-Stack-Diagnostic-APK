@@ -1,0 +1,207 @@
+diff -ruN '--exclude=build' v22clean/app/build.gradle project-v2.2/app/build.gradle
+--- v22clean/app/build.gradle	2026-08-25 17:59:55.638252656 +0000
++++ project-v2.2/app/build.gradle	2026-08-25 17:55:04.201169188 +0000
+@@ -8,8 +8,8 @@
+         applicationId 'com.highbrightnesscontrol.note4'
+         minSdk 23
+         targetSdk 23
+-        versionCode 4
+-        versionName '2.2'
++        versionCode 6
++        versionName '3 Final'
+     }
+ 
+     buildTypes {
+diff -ruN '--exclude=build' v22clean/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java project-v2.2/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
+--- v22clean/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java	2026-08-25 17:59:55.638034639 +0000
++++ project-v2.2/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java	2026-08-25 17:55:04.201081008 +0000
+@@ -18,7 +18,6 @@
+ import java.util.concurrent.Executors;
+ 
+ public class HbmService extends Service implements SensorEventListener, SharedPreferences.OnSharedPreferenceChangeListener {
+-    public static final String ACTION_RESCAN = "com.highbrightnesscontrol.note4.RESCAN";
+     public static final String ACTION_STOP = "com.highbrightnesscontrol.note4.STOP";
+     public static final String ACTION_STATE = "com.highbrightnesscontrol.note4.STATE";
+     public static final String EXTRA_STATE = "state";
+@@ -75,7 +74,6 @@
+ 
+     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+         if (intent != null && ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
+-        if (intent != null && ACTION_RESCAN.equals(intent.getAction())) io.execute(new Runnable() { @Override public void run() { scanPaths(); } });
+         return START_STICKY;
+     }
+ 
+@@ -153,7 +151,7 @@
+ 
+         boolean master = prefs.getBoolean(Prefs.MASTER, false);
+         boolean forceAlways = prefs.getBoolean(Prefs.FORCE_HBM, false);
+-        int sensitivity = Math.max(0, Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100)));
++        int sensitivity = Math.max(0, Math.min(1000000, prefs.getInt(Prefs.SENSITIVITY, 100)));
+         boolean manualMax = prefs.getBoolean(Prefs.MANUAL_MAX, false);
+         boolean disableThermal = prefs.getBoolean(Prefs.THERMAL, false);
+         boolean disableTimeout = prefs.getBoolean(Prefs.TIMEOUT, false);
+@@ -301,7 +299,7 @@
+         i.setPackage(getPackageName());
+         i.putExtra(EXTRA_STATE, lastState);
+         i.putExtra(EXTRA_LUX, rawLux);
+-        int s = prefs == null ? 100 : Math.max(0, Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100)));
++        int s = prefs == null ? 100 : Math.max(0, Math.min(1000000, prefs.getInt(Prefs.SENSITIVITY, 100)));
+         i.putExtra(EXTRA_EFFECTIVE_LUX, filteredLux < 0 ? -1f : filteredLux * (s / 100f));
+         i.putExtra(EXTRA_HBM, appForcedHbm);
+         sendBroadcast(i);
+diff -ruN '--exclude=build' v22clean/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java project-v2.2/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
+--- v22clean/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java	2026-08-25 17:59:55.637808414 +0000
++++ project-v2.2/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java	2026-08-25 17:55:21.294451020 +0000
+@@ -1,6 +1,7 @@
+ package com.highbrightnesscontrol.note4;
+ 
+ import android.app.Activity;
++import android.app.AlertDialog;
+ import android.content.BroadcastReceiver;
+ import android.content.Context;
+ import android.content.Intent;
+@@ -12,13 +13,15 @@
+ import android.os.Bundle;
+ import android.view.Gravity;
+ import android.view.View;
+-import android.widget.Button;
+ import android.widget.CompoundButton;
++import android.widget.EditText;
+ import android.widget.LinearLayout;
++import android.widget.Toast;
+ import android.widget.ScrollView;
+ import android.widget.SeekBar;
+ import android.widget.Switch;
+ import android.widget.TextView;
++import android.text.InputType;
+ 
+ import java.util.Locale;
+ 
+@@ -116,7 +119,7 @@
+ 
+         LinearLayout sensRow = horizontal();
+         TextView zero = text("0%", 12, MUTED);
+-        TextView five = text("5000%", 12, MUTED);
++        TextView five = text("200%", 12, MUTED);
+         sensitivityValue = text("100%", 16, GOLD);
+         sensitivityValue.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+         sensitivityValue.setGravity(Gravity.CENTER);
+@@ -127,10 +130,10 @@
+         mainCard.addView(sensRow, lp(-1, -2, 0, 5, 0, 0));
+ 
+         sensitivity = new SeekBar(this);
+-        sensitivity.setMax(5000);
++        sensitivity.setMax(200);
+         mainCard.addView(sensitivity, lp(-1, -2, 0, 0, 0, 0));
+ 
+-        TextView scaleHelp = text("100% = Samsung stock HBM behavior. 500% uses one-fifth the reference light level; 5000% uses one-fiftieth. 50% requires twice as much light. 0% blocks light-triggered HBM. The real sensor reading is never spoofed.", 12, MUTED);
++        TextView scaleHelp = text("Slider: 0–200%. Tap the gold percentage above it to enter any value from 0–1,000,000%. 100% = Samsung stock HBM behavior. 50% requires twice as much light; 200% uses half the reference light level. 0% blocks light-triggered HBM. The real sensor reading is never spoofed.", 12, MUTED);
+         mainCard.addView(scaleHelp, lp(-1, -2, 0, 3, 0, 10));
+ 
+         luxStatus = text("Ambient light sensor: waiting for reading", 12, GOLD);
+@@ -147,20 +150,6 @@
+ 
+         root.addView(mainCard, lp(-1, -2, 0, 0, 0, 14));
+ 
+-        LinearLayout actionCard = card();
+-        TextView aTitle = text("Control", 16, WHITE);
+-        aTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+-        actionCard.addView(aTitle);
+-        LinearLayout buttons = horizontal();
+-        Button scan = button("SCAN");
+-        Button apply = button("APPLY");
+-        buttons.addView(scan, new LinearLayout.LayoutParams(0, dp(48), 1f));
+-        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(0, dp(48), 1f);
+-        ap.setMargins(dp(10), 0, 0, 0);
+-        buttons.addView(apply, ap);
+-        actionCard.addView(buttons, lp(-1, -2, 0, 12, 0, 0));
+-        root.addView(actionCard, lp(-1, -2, 0, 0, 0, 14));
+-
+         LinearLayout warning = card();
+         TextView warningTitle = text("AMOLED protection", 15, GOLD);
+         warningTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+@@ -203,20 +192,54 @@
+             }
+         });
+ 
+-        scan.setOnClickListener(new View.OnClickListener() {
+-            @Override public void onClick(View v) {
+-                chipStatus.setText("SCANNING");
+-                Intent i = new Intent(MainActivity.this, HbmService.class);
+-                i.setAction(HbmService.ACTION_RESCAN);
+-                startService(i);
+-            }
+-        });
+-        apply.setOnClickListener(new View.OnClickListener() {
++        sensitivityValue.setClickable(true);
++        sensitivityValue.setOnClickListener(new View.OnClickListener() {
+             @Override public void onClick(View v) {
+-                startService(new Intent(MainActivity.this, HbmService.class));
+-                chipStatus.setText("APPLIED");
++                showSensitivityEntry();
+             }
+         });
++
++    }
++
++    private void showSensitivityEntry() {
++        final int current = Math.max(0, Math.min(1000000, prefs.getInt(Prefs.SENSITIVITY, 100)));
++        LinearLayout box = vertical();
++        box.setPadding(dp(24), 0, dp(24), 0);
++
++        final EditText input = new EditText(this);
++        input.setInputType(InputType.TYPE_CLASS_NUMBER);
++        input.setSingleLine(true);
++        input.setText(Integer.toString(current));
++        input.setSelectAllOnFocus(true);
++        box.addView(input, new LinearLayout.LayoutParams(-1, -2));
++
++        TextView range = text("0–1,000,000%", 12, MUTED);
++        box.addView(range, lp(-1, -2, 0, 4, 0, 0));
++
++        new AlertDialog.Builder(this)
++                .setTitle("Light sensitivity")
++                .setView(box)
++                .setNegativeButton("Cancel", null)
++                .setPositiveButton("Set", new android.content.DialogInterface.OnClickListener() {
++                    @Override public void onClick(android.content.DialogInterface dialog, int which) {
++                        try {
++                            int value = Integer.parseInt(input.getText().toString().trim());
++                            if (value < 0 || value > 1000000) {
++                                Toast.makeText(MainActivity.this, "Enter a value from 0 to 1,000,000", Toast.LENGTH_SHORT).show();
++                                return;
++                            }
++                            prefs.edit().putInt(Prefs.SENSITIVITY, value).apply();
++                            loading = true;
++                            sensitivity.setProgress(Math.min(value, 200));
++                            sensitivityValue.setText(value + "%");
++                            loading = false;
++                            startService(new Intent(MainActivity.this, HbmService.class));
++                        } catch (Throwable ignored) {
++                            Toast.makeText(MainActivity.this, "Enter a whole number from 0 to 1,000,000", Toast.LENGTH_SHORT).show();
++                        }
++                    }
++                })
++                .show();
+     }
+ 
+     private void loadPrefs() {
+@@ -227,8 +250,8 @@
+         switchThermal.setChecked(prefs.getBoolean(Prefs.THERMAL, false));
+         switchTimeout.setChecked(prefs.getBoolean(Prefs.TIMEOUT, false));
+         switchBoot.setChecked(prefs.getBoolean(Prefs.BOOT, false));
+-        int s = Math.max(0, Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100)));
+-        sensitivity.setProgress(s);
++        int s = Math.max(0, Math.min(1000000, prefs.getInt(Prefs.SENSITIVITY, 100)));
++        sensitivity.setProgress(Math.min(s, 200));
+         sensitivityValue.setText(s + "%");
+         loading = false;
+     }
+@@ -249,7 +272,6 @@
+         GradientDrawable g = new GradientDrawable(); g.setColor(Color.rgb(28, 24, 8)); g.setCornerRadius(dp(20)); g.setStroke(dp(1), Color.rgb(90, 74, 8)); t.setBackground(g); return t;
+     }
+     private Switch sw(String s) { Switch w = new Switch(this); w.setText(s); w.setTextColor(WHITE); w.setTextSize(14); w.setPadding(0, dp(8), 0, dp(8)); return w; }
+-    private Button button(String s) { Button b = new Button(this); b.setText(s); b.setTextColor(Color.BLACK); b.setTextSize(13); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); GradientDrawable g = new GradientDrawable(); g.setColor(GOLD); g.setCornerRadius(dp(8)); b.setBackground(g); return b; }
+     private LinearLayout.LayoutParams lp(int w, int h, int l, int t, int r, int b) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w,h); p.setMargins(dp(l),dp(t),dp(r),dp(b)); return p; }
+     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+ }
