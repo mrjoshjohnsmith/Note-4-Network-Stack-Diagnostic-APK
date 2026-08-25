@@ -1,4 +1,4 @@
-name: Build High Brightness Control
+name: Build High Brightness Control 2.1
 on:
   push:
     branches: [ high-brightness-control-v2 ]
@@ -22,11 +22,10 @@ jobs:
       - name: Materialize project
         shell: bash
         run: |
-          cat hbc-project.part00 hbc-project.part01 hbc-project.part02 hbc-project.part03 | base64 -d > /tmp/hbc-project.tar.gz
-          echo 'cc476c6f5db4c0d3d595fa8a95e6a633ad8dbc43ba20c11d6f6b7fe78aa73ae9  /tmp/hbc-project.tar.gz' | sha256sum -c -
-          gzip -t /tmp/hbc-project.tar.gz
+          echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
+          gzip -t hbc-project-v2.1.tar.gz
           mkdir -p hbc-src
-          tar -xzf /tmp/hbc-project.tar.gz -C hbc-src
+          tar -xzf hbc-project-v2.1.tar.gz -C hbc-src
           sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' hbc-src/app/build.gradle
       - name: Build release APK
         working-directory: hbc-src
@@ -35,11 +34,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifact
-          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_v2_UNSIGNED_ALIGNED.apk
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_v2.1_UNSIGNED_ALIGNED.apk
           cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" artifact/apksigner.jar
-          sha256sum artifact/High_Brightness_Control_v2_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
+          sha256sum artifact/High_Brightness_Control_v2.1_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: high-brightness-control-v2
+          name: high-brightness-control-v2-1
           path: artifact/*
           if-no-files-found: error
