@@ -23,7 +23,7 @@ jobs:
         shell: bash
         run: |
           cat hbc-project.part00 hbc-project.part01 | base64 -d > /tmp/hbc-project.tar.gz
-          echo 'da223e54d198c6d6cbf9692879cb245c10125c138e344733e84bee5c09fbfbaf  /tmp/hbc-project.tar.gz' | sha256sum -c -
+          echo 'cc476c6f5db4c0d3d595fa8a95e6a633ad8dbc43ba20c11d6f6b7fe78aa73ae9  /tmp/hbc-project.tar.gz' | sha256sum -c -
           gzip -t /tmp/hbc-project.tar.gz
           mkdir -p hbc-src
           tar -xzf /tmp/hbc-project.tar.gz -C hbc-src
