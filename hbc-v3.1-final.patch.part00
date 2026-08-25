@@ -1,0 +1,160 @@
+diff -ruN old/HbmService.java new/HbmService.java
+--- old/HbmService.java	2026-08-25 18:45:10.000000000 +0000
++++ new/HbmService.java	2026-08-25 22:44:57.019467039 +0000
+@@ -3,6 +3,7 @@
+ import android.app.Notification;
+ import android.app.PendingIntent;
+ import android.app.Service;
++import android.widget.RemoteViews;
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.SharedPreferences;
+@@ -13,12 +14,14 @@
+ import android.os.Handler;
+ import android.os.IBinder;
+ import android.os.Looper;
++import android.os.Process;
+ import android.provider.Settings;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+ 
+ public class HbmService extends Service implements SensorEventListener, SharedPreferences.OnSharedPreferenceChangeListener {
+     public static final String ACTION_STOP = "com.highbrightnesscontrol.note4.STOP";
++    public static final String ACTION_RESTORE_AND_STOP = "com.highbrightnesscontrol.note4.RESTORE_AND_STOP";
+     public static final String ACTION_STATE = "com.highbrightnesscontrol.note4.STATE";
+     public static final String EXTRA_STATE = "state";
+     public static final String EXTRA_LUX = "lux";
+@@ -42,6 +45,8 @@
+     private volatile boolean lightDemand;
+     private volatile boolean manualDemand;
+     private volatile boolean appForcedHbm;
++    private volatile boolean autoBrightnessOverrideActive;
++    private volatile boolean thermalBypassActive;
+     private volatile long lastStateCheck;
+     private volatile long lastThermalCheck;
+     private volatile int lastNormalAuto = -1;
+@@ -49,6 +54,19 @@
+     private volatile String autoBrightnessPath = "";
+     private volatile String explicitHbmPath = "";
+     private volatile String mdnieOutdoorPath = "";
++    private volatile String brightnessPath = "";
++    private volatile String siopEnablePath = "";
++    private volatile String powerReducePath = "";
++    private volatile String temperaturePath = "";
++    private volatile String batterySiopPath = "";
++    private volatile String baselineAuto = "";
++    private volatile String baselineExplicit = "";
++    private volatile String baselineBrightness = "";
++    private volatile String baselineSiopEnable = "";
++    private volatile String baselinePowerReduce = "";
++    private volatile String baselineTemperature = "";
++    private volatile String baselineBatterySiop = "";
++    private volatile String watchTokenPath = "";
+     private volatile String lastState = "STARTING";
+     private volatile boolean rootOk;
+ 
+@@ -73,7 +91,21 @@
+     }
+ 
+     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+-        if (intent != null && ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
++        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
++            io.execute(new Runnable() { @Override public void run() { restoreSystemState(); stopSelf(); } });
++            return START_NOT_STICKY;
++        }
++        if (intent != null && ACTION_RESTORE_AND_STOP.equals(intent.getAction())) {
++            io.execute(new Runnable() {
++                @Override public void run() {
++                    restoreSystemState();
++                    launchDetachedForceStop();
++                    stopForeground(true);
++                    stopSelf();
++                }
++            });
++            return START_NOT_STICKY;
++        }
+         return START_STICKY;
+     }
+ 
+@@ -83,7 +115,8 @@
+         if (prefs != null) prefs.unregisterOnSharedPreferenceChangeListener(this);
+         io.execute(new Runnable() {
+             @Override public void run() {
+-                if (appForcedHbm) releaseHbmOnce();
++                restoreSystemState();
++                stopForceStopWatcher();
+                 RootShell.close();
+             }
+         });
+@@ -128,11 +161,36 @@
+         mdnieOutdoorPath = firstExisting(new String[]{
+                 "/sys/class/mdnie/mdnie/outdoor",
+                 "/sys/class/mdnie/mdnie/hbm"});
++        brightnessPath = firstExisting(new String[]{
++                "/sys/class/backlight/panel/brightness",
++                "/sys/class/backlight/panel0-backlight/brightness",
++                "/sys/class/lcd/panel/brightness"});
++        siopEnablePath = firstExisting(new String[]{
++                "/sys/class/lcd/panel/siop_enable",
++                "/sys/class/backlight/panel/device/lcd/panel/siop_enable"});
++        powerReducePath = firstExisting(new String[]{
++                "/sys/class/lcd/panel/power_reduce",
++                "/sys/class/backlight/panel/device/lcd/panel/power_reduce"});
++        temperaturePath = firstExisting(new String[]{
++                "/sys/class/lcd/panel/temperature",
++                "/sys/class/backlight/panel/device/lcd/panel/temperature"});
++        batterySiopPath = firstExisting(new String[]{
++                "/sys/class/power_supply/battery/siop_level"});
++
++        baselineAuto = readText(autoBrightnessPath);
++        baselineExplicit = readText(explicitHbmPath);
++        baselineBrightness = readText(brightnessPath);
++        baselineSiopEnable = readText(siopEnablePath);
++        baselinePowerReduce = readText(powerReducePath);
++        baselineTemperature = readText(temperaturePath);
++        baselineBatterySiop = readText(batterySiopPath);
+ 
+         if (autoBrightnessPath.length() > 0) {
+             int a = readInt(autoBrightnessPath, -1);
+             if (a >= 0 && a <= 5) lastNormalAuto = a;
++            if (a == 6) baselineAuto = Integer.toString(lastNormalAuto >= 0 ? lastNormalAuto : 5);
+         }
++        startForceStopWatcher();
+         if (autoBrightnessPath.length() == 0 && explicitHbmPath.length() == 0) lastState = "HBM NODE NOT FOUND";
+         else lastState = "READY";
+         broadcastState();
+@@ -152,24 +210,28 @@
+         boolean master = prefs.getBoolean(Prefs.MASTER, false);
+         boolean forceAlways = prefs.getBoolean(Prefs.FORCE_HBM, false);
+         int sensitivity = Math.max(0, Math.min(1000000, prefs.getInt(Prefs.SENSITIVITY, 100)));
++        boolean applyToSamsungAuto = prefs.getBoolean(Prefs.APPLY_TO_AUTO_BRIGHTNESS, false);
+         boolean manualMax = prefs.getBoolean(Prefs.MANUAL_MAX, false);
+         boolean disableThermal = prefs.getBoolean(Prefs.THERMAL, false);
+         boolean disableTimeout = prefs.getBoolean(Prefs.TIMEOUT, false);
+         long now = System.currentTimeMillis();
+ 
+-        manualDemand = false;
+-        if (master && manualMax) {
+-            try {
+-                int mode = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE);
+-                int b = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
+-                manualDemand = mode == Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL && b >= 255;
+-            } catch (Throwable ignored) {}
+-        }
++        int screenMode = -1;
++        int screenBrightness = -1;
++        try {
++            screenMode = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE);
++            screenBrightness = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
++        } catch (Throwable ignored) {}
++        boolean androidAuto = screenMode == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC;
++
++        manualDemand = master && manualMax
++                && screenMode == Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
++                && screenBrightness >= 255;
+ 
+         boolean previous = lightDemand;
+         float lux = filteredLux;
+         float effective = lux < 0f ? -1f : lux * (sensitivity / 100f);
+-        if (!master || lux < 0f) {
++        if (!master || !androidAuto || lux < 0f) {
