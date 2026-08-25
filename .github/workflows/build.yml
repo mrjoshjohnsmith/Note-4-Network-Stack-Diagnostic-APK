@@ -19,7 +19,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Materialize verified source and apply v2.3 changes
+      - name: Materialize verified v2.2 baseline and apply v2.3 patch
         shell: bash
         run: |
           echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
@@ -29,7 +29,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # Preserve the v2.1 persistent-root-shell hardening.
           p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java')
           s = p.read_text()
           old = '                input.write("rc=$?; echo " + marker + "$rc");'
@@ -37,182 +36,62 @@ jobs:
           assert s.count(old) == 1
           p.write_text(s.replace(old, new))
 
-          # Main UI: slider is 0-200%; tap the gold value for direct 0-20,000% entry.
           p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java')
           s = p.read_text()
-
           replacements = {
-              'import android.app.Activity;\n': 'import android.app.Activity;\nimport android.app.AlertDialog;\n',
-              'import android.widget.Button;\n': '',
-              'import android.widget.CompoundButton;\n': 'import android.widget.CompoundButton;\nimport android.widget.EditText;\n',
-              'import android.widget.LinearLayout;\n': 'import android.widget.LinearLayout;\nimport android.widget.Toast;\n',
-              'import android.widget.TextView;\n': 'import android.widget.TextView;\nimport android.text.InputType;\n',
-              'TextView five = text("2000%", 12, MUTED);': 'TextView five = text("200%", 12, MUTED);',
-              'sensitivity.setMax(2000);': 'sensitivity.setMax(200);',
-              'TextView scaleHelp = text("100% = Samsung stock HBM behavior. 500% uses one-fifth the reference light level; 2000% uses one-twentieth. 50% requires twice as much light. 0% blocks light-triggered HBM. The real sensor reading is never spoofed.", 12, MUTED);': 'TextView scaleHelp = text("Slider: 0–200%. Tap the gold percentage above it to enter any value from 0–20,000%. 100% = Samsung stock HBM behavior. 50% requires twice as much light; 200% uses half the reference light level. 0% blocks light-triggered HBM. The real sensor reading is never spoofed.", 12, MUTED);',
+              'TextView five = text("2000%", 12, MUTED);': 'TextView five = text("5000%", 12, MUTED);',
+              'sensitivity.setMax(2000);': 'sensitivity.setMax(5000);',
+              '500% uses one-fifth the reference light level; 2000% uses one-twentieth.': '500% uses one-fifth the reference light level; 5000% uses one-fiftieth.',
+              'Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))': 'Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100))',
           }
           for old, new in replacements.items():
               assert s.count(old) == 1, old
               s = s.replace(old, new)
-
-          action_card = '''        LinearLayout actionCard = card();
-          TextView aTitle = text("Control", 16, WHITE);
-          aTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-          actionCard.addView(aTitle);
-          LinearLayout buttons = horizontal();
-          Button scan = button("SCAN");
-          Button apply = button("APPLY");
-          buttons.addView(scan, new LinearLayout.LayoutParams(0, dp(48), 1f));
-          LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(0, dp(48), 1f);
-          ap.setMargins(dp(10), 0, 0, 0);
-          buttons.addView(apply, ap);
-          actionCard.addView(buttons, lp(-1, -2, 0, 12, 0, 0));
-          root.addView(actionCard, lp(-1, -2, 0, 0, 0, 14));
-
-          '''
-          assert s.count(action_card) == 1
-          s = s.replace(action_card, '')
-
-          old_listeners = '''        scan.setOnClickListener(new View.OnClickListener() {
-              @Override public void onClick(View v) {
-                  chipStatus.setText("SCANNING");
-                  Intent i = new Intent(MainActivity.this, HbmService.class);
-                  i.setAction(HbmService.ACTION_RESCAN);
-                  startService(i);
-              }
-          });
-          apply.setOnClickListener(new View.OnClickListener() {
-              @Override public void onClick(View v) {
-                  startService(new Intent(MainActivity.this, HbmService.class));
-                  chipStatus.setText("APPLIED");
-              }
-          });
-          '''
-          assert s.count(old_listeners) == 1
-          s = s.replace(old_listeners, '')
-
-          seek_listener = '''        sensitivity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-              @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                  sensitivityValue.setText(progress + "%");
-                  if (fromUser && !loading) prefs.edit().putInt(Prefs.SENSITIVITY, progress).apply();
-              }
-              @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-              @Override public void onStopTrackingTouch(SeekBar seekBar) {
-                  startService(new Intent(MainActivity.this, HbmService.class));
-              }
-          });
-          '''
-          assert s.count(seek_listener) == 1
-          s = s.replace(seek_listener, seek_listener + '''
-          sensitivityValue.setClickable(true);
-          sensitivityValue.setOnClickListener(new View.OnClickListener() {
-              @Override public void onClick(View v) {
-                  showSensitivityEntry();
-              }
-          });
-          ''')
-
-          old_load = '''        int s = Math.max(0, Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100)));
-          sensitivity.setProgress(s);
-          sensitivityValue.setText(s + "%");'''
-          new_load = '''        int s = Math.max(0, Math.min(20000, prefs.getInt(Prefs.SENSITIVITY, 100)));
-          sensitivity.setProgress(Math.min(s, 200));
-          sensitivityValue.setText(s + "%");'''
-          assert s.count(old_load) == 1
-          s = s.replace(old_load, new_load)
-
-          entry_method = '''    private void showSensitivityEntry() {
-              final int current = Math.max(0, Math.min(20000, prefs.getInt(Prefs.SENSITIVITY, 100)));
-              LinearLayout box = vertical();
-              box.setPadding(dp(24), 0, dp(24), 0);
-
-              final EditText input = new EditText(this);
-              input.setInputType(InputType.TYPE_CLASS_NUMBER);
-              input.setSingleLine(true);
-              input.setText(Integer.toString(current));
-              input.setSelectAllOnFocus(true);
-              box.addView(input, new LinearLayout.LayoutParams(-1, -2));
-
-              TextView range = text("0–20,000%", 12, MUTED);
-              box.addView(range, lp(-1, -2, 0, 4, 0, 0));
-
-              new AlertDialog.Builder(this)
-                      .setTitle("Light sensitivity")
-                      .setView(box)
-                      .setNegativeButton("Cancel", null)
-                      .setPositiveButton("Set", new android.content.DialogInterface.OnClickListener() {
-                          @Override public void onClick(android.content.DialogInterface dialog, int which) {
-                              try {
-                                  int value = Integer.parseInt(input.getText().toString().trim());
-                                  if (value < 0 || value > 20000) {
-                                      Toast.makeText(MainActivity.this, "Enter a value from 0 to 20,000", Toast.LENGTH_SHORT).show();
-                                      return;
-                                  }
-                                  prefs.edit().putInt(Prefs.SENSITIVITY, value).apply();
-                                  loading = true;
-                                  sensitivity.setProgress(Math.min(value, 200));
-                                  sensitivityValue.setText(value + "%");
-                                  loading = false;
-                                  startService(new Intent(MainActivity.this, HbmService.class));
-                              } catch (Throwable ignored) {
-                                  Toast.makeText(MainActivity.this, "Enter a whole number from 0 to 20,000", Toast.LENGTH_SHORT).show();
-                              }
-                          }
-                      })
-                      .show();
-          }
-
-          '''
-          marker = '    private void loadPrefs() {\n'
-          assert s.count(marker) == 1
-          s = s.replace(marker, entry_method + marker)
-
-          button_helper = '    private Button button(String s) { Button b = new Button(this); b.setText(s); b.setTextColor(Color.BLACK); b.setTextSize(13); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); GradientDrawable g = new GradientDrawable(); g.setColor(GOLD); g.setCornerRadius(dp(8)); b.setBackground(g); return b; }\n'
-          assert s.count(button_helper) == 1
-          s = s.replace(button_helper, '')
           p.write_text(s)
 
-          # Service accepts direct sensitivity values through 20,000%; remove manual rescan action.
           p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java')
           s = p.read_text()
-          rescan_const = '    public static final String ACTION_RESCAN = "com.highbrightnesscontrol.note4.RESCAN";\n'
-          rescan_handler = '        if (intent != null && ACTION_RESCAN.equals(intent.getAction())) io.execute(new Runnable() { @Override public void run() { scanPaths(); } });\n'
-          assert s.count(rescan_const) == 1
-          assert s.count(rescan_handler) == 1
-          s = s.replace(rescan_const, '')
-          s = s.replace(rescan_handler, '')
-          assert s.count('Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))') == 2
-          s = s.replace('Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))',
-                        'Math.min(20000, prefs.getInt(Prefs.SENSITIVITY, 100))')
-          p.write_text(s)
+          old = 'Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))'
+          assert s.count(old) == 2
+          p.write_text(s.replace(old, 'Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100))'))
 
-          # Continue following Android's normal auto-rotate setting.
           p = Path('hbc-src/app/src/main/AndroidManifest.xml')
           s = p.read_text()
           portrait = '            android:screenOrientation="portrait"\n'
           assert s.count(portrait) == 1
           p.write_text(s.replace(portrait, ''))
 
-          # In-place update version.
           p = Path('hbc-src/app/build.gradle')
           s = p.read_text()
           assert s.count('versionCode 3') == 1
           assert s.count("versionName '2.1'") == 1
-          s = s.replace('versionCode 3', 'versionCode 5')
-          s = s.replace("versionName '2.1'", "versionName '2.3'")
-          p.write_text(s)
+          p.write_text(s.replace('versionCode 3', 'versionCode 4').replace("versionName '2.1'", "versionName '2.2'"))
           PY
 
-          grep -F 'sensitivity.setMax(200)' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
-          grep -F '0–20,000%' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
-          grep -F 'showSensitivityEntry()' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
-          test "$(grep -R -F 'Math.min(20000' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/{MainActivity.java,HbmService.java} | wc -l)" -eq 4
-          ! grep -R -E 'ACTION_RESCAN|SCAN|APPLY' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4
+          cd hbc-src
+          patch -p1 --fuzz=0 < ../hbc-v2.3.patch
+          cd ..
+
+          MAIN=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
+          SERVICE=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
+          ROOT=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java
+          grep -F 'sensitivity.setMax(200);' "$MAIN"
+          grep -F '0–20,000%' "$MAIN"
+          grep -F 'showSensitivityEntry()' "$MAIN"
+          grep -F 'Math.min(20000' "$MAIN"
+          test "$(grep -F 'Math.min(20000' "$SERVICE" | wc -l)" -eq 2
+          ! grep -F 'ACTION_RESCAN' "$SERVICE"
+          ! grep -F 'Button scan' "$MAIN"
+          ! grep -F 'Button apply' "$MAIN"
+          ! grep -F 'text("Control"' "$MAIN"
+          grep -F 'io.execute(new Runnable() { @Override public void run() { scanPaths(); } });' "$SERVICE"
           ! grep -F 'screenOrientation="portrait"' hbc-src/app/src/main/AndroidManifest.xml
           grep -F 'versionCode 5' hbc-src/app/build.gradle
           grep -F "versionName '2.3'" hbc-src/app/build.gradle
-          grep -F 'printf' hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java
+          grep -F 'printf' "$ROOT"
           ! grep -R -F 'new String[]{"su", "-c"' hbc-src/app/src/main/java
+          ! grep -R -F 'setenforce' hbc-src/app/src/main/java
+          ! grep -R -F '/sys/class/sensors/light_sensor/lux' hbc-src/app/src/main/java
           sed -i '/android {/a\    lint { disable "ExpiredTargetSdkVersion" }' hbc-src/app/build.gradle
       - name: Build release APK
         working-directory: hbc-src
