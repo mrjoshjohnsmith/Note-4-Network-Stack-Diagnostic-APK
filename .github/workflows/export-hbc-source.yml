@@ -1,0 +1,66 @@
+name: Export HBC V3 Final Source
+on:
+  push:
+    branches: [ high-brightness-control-v2 ]
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialize current V3 Final source
+        shell: bash
+        run: |
+          echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
+          mkdir -p hbc-src
+          tar -xzf hbc-project-v2.1.tar.gz -C hbc-src
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/RootShell.java')
+          s = p.read_text()
+          old = '                input.write("rc=$?; echo " + marker + "$rc");'
+          new = '                input.write("rc=$?; printf \'\\\\n" + marker + "%s\\\\n\' \\"$rc\\"");'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+
+          p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java')
+          s = p.read_text()
+          replacements = {
+              'TextView five = text("2000%", 12, MUTED);': 'TextView five = text("5000%", 12, MUTED);',
+              'sensitivity.setMax(2000);': 'sensitivity.setMax(5000);',
+              '500% uses one-fifth the reference light level; 2000% uses one-twentieth.': '500% uses one-fifth the reference light level; 5000% uses one-fiftieth.',
+              'Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))': 'Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100))',
+          }
+          for old, new in replacements.items():
+              assert s.count(old) == 1, old
+              s = s.replace(old, new)
+          p.write_text(s)
+
+          p = Path('hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java')
+          s = p.read_text()
+          old = 'Math.min(2000, prefs.getInt(Prefs.SENSITIVITY, 100))'
+          assert s.count(old) == 2
+          p.write_text(s.replace(old, 'Math.min(5000, prefs.getInt(Prefs.SENSITIVITY, 100))'))
+
+          p = Path('hbc-src/app/src/main/AndroidManifest.xml')
+          s = p.read_text()
+          portrait = '            android:screenOrientation="portrait"\n'
+          assert s.count(portrait) == 1
+          p.write_text(s.replace(portrait, ''))
+
+          p = Path('hbc-src/app/build.gradle')
+          s = p.read_text()
+          p.write_text(s.replace('versionCode 3', 'versionCode 4').replace("versionName '2.1'", "versionName '2.2'"))
+          PY
+          cd hbc-src
+          patch -p1 --fuzz=0 < ../hbc-v3-final.patch
+          cd ..
+          mkdir -p export
+          cp hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/*.java export/
+          cp hbc-src/app/src/main/AndroidManifest.xml export/
+          cp hbc-src/app/build.gradle export/app-build.gradle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hbc-v3-final-source
+          path: export/*
+          if-no-files-found: error
