@@ -1,0 +1,98 @@
+         GradientDrawable g = new GradientDrawable(); g.setColor(Color.rgb(28, 24, 8)); g.setCornerRadius(dp(20)); g.setStroke(dp(1), Color.rgb(90, 74, 8)); t.setBackground(g); return t;
+     }
+     private Switch sw(String s) { Switch w = new Switch(this); w.setText(s); w.setTextColor(WHITE); w.setTextSize(14); w.setPadding(0, dp(8), 0, dp(8)); return w; }
++    private Button actionButton(String s, boolean primary) {
++        Button b = new Button(this);
++        b.setText(s);
++        b.setTextSize(10);
++        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
++        b.setGravity(Gravity.CENTER);
++        b.setPadding(dp(6), 0, dp(6), 0);
++        GradientDrawable g = new GradientDrawable();
++        g.setCornerRadius(dp(8));
++        if (primary) {
++            g.setColor(GOLD);
++            b.setTextColor(Color.BLACK);
++        } else {
++            g.setColor(Color.BLACK);
++            g.setStroke(dp(1), GOLD);
++            b.setTextColor(WHITE);
++        }
++        b.setBackground(g);
++        return b;
++    }
+     private LinearLayout.LayoutParams lp(int w, int h, int l, int t, int r, int b) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w,h); p.setMargins(dp(l),dp(t),dp(r),dp(b)); return p; }
+     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+ }
+diff -ruN old/Prefs.java new/Prefs.java
+--- old/Prefs.java	2026-08-25 18:45:10.000000000 +0000
++++ new/Prefs.java	2026-08-25 22:44:33.049335431 +0000
+@@ -8,6 +8,7 @@
+     static final String MASTER = "master";
+     static final String FORCE_HBM = "force_hbm";
+     static final String SENSITIVITY = "light_sensitivity";
++    static final String APPLY_TO_AUTO_BRIGHTNESS = "apply_sensitivity_to_auto_brightness";
+     static final String MANUAL_MAX = "manual_max";
+     static final String THERMAL = "disable_heat_throttle";
+     static final String TIMEOUT = "disable_time_limit";
+diff -ruN old/app-build.gradle new/app-build.gradle
+--- old/app-build.gradle	2026-08-25 18:45:10.000000000 +0000
++++ new/app-build.gradle	2026-08-25 22:44:33.049447510 +0000
+@@ -8,8 +8,8 @@
+         applicationId 'com.highbrightnesscontrol.note4'
+         minSdk 23
+         targetSdk 23
+-        versionCode 6
+-        versionName '3 Final'
++        versionCode 7
++        versionName '3.1 Final'
+     }
+ 
+     buildTypes {
+diff -ruN old/notification_hbc.xml new/notification_hbc.xml
+--- old/notification_hbc.xml	1970-01-01 00:00:00.000000000 +0000
++++ new/notification_hbc.xml	2026-08-25 22:44:57.228056700 +0000
+@@ -0,0 +1,43 @@
++<?xml version="1.0" encoding="utf-8"?>
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="64dp"
++    android:orientation="horizontal"
++    android:gravity="center_vertical"
++    android:paddingLeft="12dp"
++    android:paddingRight="12dp"
++    android:background="#000000">
++
++    <ImageView
++        android:id="@+id/notification_icon"
++        android:layout_width="42dp"
++        android:layout_height="42dp"
++        android:scaleType="fitCenter"
++        android:contentDescription="@string/app_name" />
++
++    <LinearLayout
++        android:layout_width="0dp"
++        android:layout_height="wrap_content"
++        android:layout_weight="1"
++        android:orientation="vertical"
++        android:paddingLeft="12dp">
++
++        <TextView
++            android:id="@+id/notification_title"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:textColor="#FFFFFFFF"
++            android:textSize="15sp"
++            android:textStyle="bold"
++            android:maxLines="1" />
++
++        <TextView
++            android:id="@+id/notification_text"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="2dp"
++            android:textColor="#FFFFFFFF"
++            android:textSize="12sp"
++            android:maxLines="1" />
++    </LinearLayout>
++</LinearLayout>
