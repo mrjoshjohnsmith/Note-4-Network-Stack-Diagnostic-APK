@@ -1,0 +1,160 @@
+             lightDemand = false;
+         } else if (sensitivity == 100 || sensitivity == 0) {
+             lightDemand = false;
+@@ -179,6 +241,12 @@
+             lightDemand = effective >= (HBM_REFERENCE_LUX * HYSTERESIS);
+         }
+ 
++        if (master && applyToSamsungAuto && androidAuto && sensitivity != 100 && lux >= 0f) {
++            applyScaledAutoBrightness(effective);
++        } else if (autoBrightnessOverrideActive) {
++            releaseScaledAutoBrightness();
++        }
++
+         boolean wantHbm = master && (forceAlways || manualDemand || lightDemand);
+ 
+         int currentAuto = -1;
+@@ -195,7 +263,7 @@
+         }
+ 
+         boolean stockHbmActive = !appForcedHbm && ((currentAuto == 6) || (autoBrightnessPath.length() == 0 && currentExplicit > 0));
+-        boolean stockMaintenanceDemand = master && !forceAlways && sensitivity == 100 && disableTimeout
++        boolean stockMaintenanceDemand = master && androidAuto && !forceAlways && sensitivity == 100 && disableTimeout
+                 && filteredLux >= HBM_REFERENCE_LUX;
+         if (stockMaintenanceDemand) wantHbm = true;
+ 
+@@ -211,7 +279,7 @@
+             releaseHbmOnce();
+         }
+ 
+-        if (master && sensitivity < 100 && !forceAlways && !manualDemand && !lightDemand) {
++        if (master && androidAuto && sensitivity < 100 && !forceAlways && !manualDemand && !lightDemand) {
+             if (currentAuto == 6) {
+                 writeNode(autoBrightnessPath, Integer.toString(lastNormalAuto >= 0 ? lastNormalAuto : 5));
+             }
+@@ -223,7 +291,10 @@
+         if (disableThermal && master && (wantHbm || stockHbmActive || appForcedHbm)
+                 && now - lastThermalCheck >= THERMAL_CHECK_MS) {
+             applyThermalBypass();
++            thermalBypassActive = true;
+             lastThermalCheck = now;
++        } else if ((!disableThermal || !master) && thermalBypassActive) {
++            restoreThermalState();
+         }
+ 
+         String mode;
+@@ -232,7 +303,8 @@
+         else if (manualDemand) mode = "HBM · MANUAL MAX";
+         else if (lightDemand) mode = "HBM · LIGHT";
+         else if (sensitivity == 100) mode = "STOCK AUTO";
+-        else mode = "AUTO · SCALED";
++        else if (applyToSamsungAuto && androidAuto) mode = "AUTO · MULTIPLIED";
++        else mode = "AUTO · SCALED HBM";
+         if (!mode.equals(lastState)) lastState = mode;
+         broadcastState();
+     }
+@@ -269,16 +341,108 @@
+         restoreAuto = -1;
+     }
+ 
++    private void applyScaledAutoBrightness(float effectiveLux) {
++        if (brightnessPath.length() == 0 || effectiveLux < 0f) return;
++        int target = samsungBrightnessForLux(effectiveLux);
++        int current = readInt(brightnessPath, -1);
++        if (current != target) writeNode(brightnessPath, Integer.toString(target));
++        autoBrightnessOverrideActive = true;
++    }
++
++    private void releaseScaledAutoBrightness() {
++        boolean androidAuto = false;
++        try {
++            androidAuto = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE)
++                    == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC;
++        } catch (Throwable ignored) {}
++        if (androidAuto && brightnessPath.length() > 0 && filteredLux >= 0f) {
++            writeNode(brightnessPath, Integer.toString(samsungBrightnessForLux(filteredLux)));
++        }
++        autoBrightnessOverrideActive = false;
++    }
++
++    private int samsungBrightnessForLux(float lux) {
++        final float[] x = {0f, 6f, 50f, 500f, 1000f, 4999f, 5000f};
++        final int[] y = {30, 30, 59, 134, 161, 219, 255};
++        if (lux <= x[0]) return y[0];
++        for (int i = 1; i < x.length; i++) {
++            if (lux <= x[i]) {
++                float f = (lux - x[i - 1]) / (x[i] - x[i - 1]);
++                return Math.max(1, Math.min(255, Math.round(y[i - 1] + f * (y[i] - y[i - 1]))));
++            }
++        }
++        return 255;
++    }
++
+     private void applyThermalBypass() {
+-        String cmd =
+-                "for p in '/sys/class/lcd/panel/siop_enable' '/sys/class/backlight/panel/device/lcd/panel/siop_enable'; do " +
+-                "if [ -e \"$p\" ]; then v=$(cat \"$p\" 2>/dev/null); [ \"$v\" = '0' ] || echo 0 > \"$p\"; break; fi; done; " +
+-                "for p in '/sys/class/lcd/panel/power_reduce' '/sys/class/backlight/panel/device/lcd/panel/power_reduce'; do " +
+-                "if [ -e \"$p\" ]; then v=$(cat \"$p\" 2>/dev/null); [ \"$v\" = '0' ] || echo 0 > \"$p\"; break; fi; done; " +
+-                "for p in '/sys/class/lcd/panel/temperature' '/sys/class/backlight/panel/device/lcd/panel/temperature'; do " +
+-                "if [ -e \"$p\" ]; then v=$(cat \"$p\" 2>/dev/null); [ \"$v\" = '25' ] || echo 25 > \"$p\"; break; fi; done; " +
+-                "p='/sys/class/power_supply/battery/siop_level'; if [ -e \"$p\" ]; then v=$(cat \"$p\" 2>/dev/null); [ \"$v\" = '100' ] || echo 100 > \"$p\"; fi";
+-        RootShell.run(cmd);
++        if (siopEnablePath.length() > 0 && readInt(siopEnablePath, -1) != 0) writeNode(siopEnablePath, "0");
++        if (powerReducePath.length() > 0 && readInt(powerReducePath, -1) != 0) writeNode(powerReducePath, "0");
++        if (temperaturePath.length() > 0 && readInt(temperaturePath, -1) != 25) writeNode(temperaturePath, "25");
++        if (batterySiopPath.length() > 0 && readInt(batterySiopPath, -1) != 100) writeNode(batterySiopPath, "100");
++    }
++
++    private void restoreThermalState() {
++        restoreNode(siopEnablePath, baselineSiopEnable);
++        restoreNode(powerReducePath, baselinePowerReduce);
++        restoreNode(temperaturePath, baselineTemperature);
++        restoreNode(batterySiopPath, baselineBatterySiop);
++        thermalBypassActive = false;
++    }
++
++    private void restoreSystemState() {
++        if (autoBrightnessOverrideActive) releaseScaledAutoBrightness();
++        if (appForcedHbm) releaseHbmOnce();
++        restoreThermalState();
++        if (autoBrightnessPath.length() > 0 && baselineAuto.length() > 0) restoreNode(autoBrightnessPath, baselineAuto);
++        if (explicitHbmPath.length() > 0 && baselineExplicit.length() > 0) restoreNode(explicitHbmPath, baselineExplicit);
++        if (mdnieOutdoorPath.length() > 0) writeNode(mdnieOutdoorPath, "0");
++    }
++
++    private void restoreNode(String path, String value) {
++        if (path != null && path.length() > 0 && value != null && value.length() > 0) writeNode(path, value);
++    }
++
++    private String readText(String path) {
++        if (path == null || path.length() == 0) return "";
++        RootShell.Result r = RootShell.run("cat " + RootShell.sq(path));
++        return r.ok() ? r.out.trim() : "";
++    }
++
++    private void startForceStopWatcher() {
++        int pid = Process.myPid();
++        watchTokenPath = "/data/local/tmp/hbc_watch_" + pid + "_" + System.nanoTime();
++        RootShell.run("echo 1 > " + RootShell.sq(watchTokenPath));
++        StringBuilder restore = new StringBuilder();
++        appendRestore(restore, autoBrightnessPath, baselineAuto);
++        appendRestore(restore, explicitHbmPath, baselineExplicit);
++        if (mdnieOutdoorPath.length() > 0) appendRestore(restore, mdnieOutdoorPath, "0");
++        appendRestore(restore, siopEnablePath, baselineSiopEnable);
++        appendRestore(restore, powerReducePath, baselinePowerReduce);
++        appendRestore(restore, temperaturePath, baselineTemperature);
++        appendRestore(restore, batterySiopPath, baselineBatterySiop);
++        String proc = "/proc/" + pid + "/cmdline";
++        String script = "while [ -e " + RootShell.sq(watchTokenPath) + " ] && [ -r " + RootShell.sq(proc)
++                + " ] && cat " + RootShell.sq(proc) + " | tr '\\000' ' ' | grep -q "
++                + RootShell.sq(getPackageName()) + "; do sleep 1; done; " + restore
++                + "rm -f " + RootShell.sq(watchTokenPath) + ";";
++        RootShell.run("sh -c " + RootShell.sq("(" + script + ") >/dev/null 2>&1 </dev/null &"));
++    }
++
++    private void stopForceStopWatcher() {
++        if (watchTokenPath != null && watchTokenPath.length() > 0) {
++            RootShell.run("rm -f " + RootShell.sq(watchTokenPath));
++            watchTokenPath = "";
++        }
