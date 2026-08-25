@@ -22,7 +22,7 @@ jobs:
       - name: Materialize project
         shell: bash
         run: |
-          echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
+          echo 'cd940509ffe656bdda433466ec75b80b93da94efb5b45381bd4287d7a0fdf7d4  hbc-project-v2.1.tar.gz' | sha256sum -c -
           gzip -t hbc-project-v2.1.tar.gz
           mkdir -p hbc-src
           tar -xzf hbc-project-v2.1.tar.gz -C hbc-src
