@@ -2,6 +2,8 @@ name: Build High Brightness Control V3.4 Lux Test
 on:
   push:
     branches: [ high-brightness-control-v2 ]
+  pull_request:
+    branches: [ high-brightness-control-v2 ]
   workflow_dispatch:
 
 jobs:
