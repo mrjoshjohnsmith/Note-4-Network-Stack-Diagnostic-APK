@@ -1,4 +1,4 @@
-name: Build High Brightness Control V3.3 Final
+name: Build High Brightness Control V3.4 Lux Test
 on:
   push:
     branches: [ high-brightness-control-v2 ]
@@ -19,7 +19,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Materialize verified V3.2 Final baseline and apply V3.3 Final patch
+      - name: Materialize verified V3.3 baseline and apply V3.4 lux transform
         shell: bash
         run: |
           echo '964f6efb63f9744d4480258b74141e1be4e4ff62ee8b55d4e741c9fcc0bfe01a  hbc-project-v2.1.tar.gz' | sha256sum -c -
@@ -97,6 +97,8 @@ jobs:
           patch -p1 --fuzz=0 < ../hbc-v3.3-final.patch
           cd ..
 
+          python3 v34_transform.py
+
           MAIN=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/MainActivity.java
           SERVICE=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/HbmService.java
           BRIDGE=hbc-src/app/src/main/java/com/highbrightnesscontrol/note4/PowerBrightnessBridge.java
@@ -113,7 +115,8 @@ jobs:
           grep -F 'RESTORE DEFAULTS & CLOSE' "$MAIN"
           grep -F 'APPLY_TO_AUTO_BRIGHTNESS' "$PREFS"
           grep -F 'SCREEN_BRIGHTNESS_MODE_AUTOMATIC' "$SERVICE"
-          grep -F 'samsungBrightnessForLux' "$SERVICE"
+          grep -F 'applyScaledAutoBrightness(sensitivity)' "$SERVICE"
+          grep -F '1073741824f' "$SERVICE"
           grep -F 'PowerBrightnessBridge.class.getName()' "$SERVICE"
           grep -F 'ACTION_TOGGLE_MASTER' "$SERVICE"
           grep -F 'ACTION_RESTORE_AND_STOP' "$SERVICE"
@@ -122,14 +125,16 @@ jobs:
           grep -F 'ACTIVE · AUTO MULTIPLIER' "$SERVICE"
           grep -F 'notification_toggle' "$SERVICE"
           grep -F 'notification_exit' "$SERVICE"
-          grep -F 'TRANSACTION_setTemporaryMarkerScreenBrightnessSettingOverride' "$BRIDGE"
-          grep -F 'binder.transact(transactionCode, data, reply, 0)' "$BRIDGE"
-          grep -F 'setMarkerBrightness(binder, transactionCode, -1)' "$BRIDGE"
+          grep -F 'TRANSACTION_setTemporaryScreenAutoBrightnessAdjustmentSettingOverride' "$BRIDGE"
+          grep -F 'data.writeFloat(target)' "$BRIDGE"
+          grep -F 'setAutoAdjustment(binder, transactionCode, Float.NaN)' "$BRIDGE"
           grep -F 'ownerAlive(ownerPid)' "$BRIDGE"
+          grep -F 'READY:AUTO_ADJ:' "$BRIDGE"
           grep -F 'powerBridgeLaunchRequested' "$SERVICE"
           grep -F 'powerBridgeFailed' "$SERVICE"
           grep -F 'new File(getFilesDir(), "hbc_power_"' "$SERVICE"
-          ! grep -F 'setTemporaryScreenBrightnessSettingOverride' "$BRIDGE"
+          ! grep -F 'TRANSACTION_setTemporaryMarkerScreenBrightnessSettingOverride' "$BRIDGE"
+          ! grep -F 'setMarkerBrightness' "$BRIDGE"
           ! grep -F 'for i in 1 2 3 4 5 6; do' "$SERVICE"
           ! grep -F 'RootShell.run("echo " + target' "$SERVICE"
           grep -F 'android:id="@+id/notification_toggle"' "$NOTE"
@@ -137,8 +142,8 @@ jobs:
           grep -F 'android:background="#000000"' "$NOTE"
           grep -F 'android:textColor="#FFFFFFFF"' "$NOTE"
           grep -F '<solid android:color="#000000"' "$BUTTON"
-          grep -F 'versionCode 9' hbc-src/app/build.gradle
-          grep -F "versionName '3.3 Final'" hbc-src/app/build.gradle
+          grep -F 'versionCode 10' hbc-src/app/build.gradle
+          grep -F "versionName '3.4 Lux Test'" hbc-src/app/build.gradle
           grep -F "applicationId 'com.highbrightnesscontrol.note4'" hbc-src/app/build.gradle
           grep -F 'printf' "$ROOT"
           ! grep -F 'writeNode(brightnessPath' "$SERVICE"
@@ -158,11 +163,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifact
-          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_V3.3_Final_UNSIGNED_ALIGNED.apk
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -p -f 4 hbc-src/app/build/outputs/apk/release/app-release-unsigned.apk artifact/High_Brightness_Control_V3.4_Lux_Test_UNSIGNED_ALIGNED.apk
           cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" artifact/apksigner.jar
-          sha256sum artifact/High_Brightness_Control_V3.3_Final_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
+          sha256sum artifact/High_Brightness_Control_V3.4_Lux_Test_UNSIGNED_ALIGNED.apk > artifact/unsigned.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: high-brightness-control-v3-3-final
+          name: high-brightness-control-v3-4-lux-test
           path: artifact/*
           if-no-files-found: error
